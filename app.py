@@ -4,13 +4,6 @@ import json
 import os
 import urllib.parse
 
-# Intento de importar el componente searchbox
-try:
-    from streamlit_searchbox import st_searchbox
-    HAS_SEARCHBOX = True
-except ImportError:
-    HAS_SEARCHBOX = False
-
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="StreamTracker Live",
@@ -48,6 +41,13 @@ st.markdown("""
         font-size: 0.85rem;
         display: inline-block;
     }
+    .result-card {
+        background-color: #1e293b;
+        padding: 10px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+        border: 1px solid #334155;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -75,7 +75,6 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# --- FUNCIÓN DE BÚSQUEDA CORE ---
 def ejecutar_busqueda_tmdb(query_text: str):
     if not query_text or len(query_text.strip()) < 2:
         return []
@@ -91,7 +90,7 @@ def ejecutar_busqueda_tmdb(query_text: str):
             data = response.json()
             results = data.get("results", [])
             
-            for item in results[:8]:
+            for item in results[:6]:
                 media_type = item.get("media_type")
                 if media_type in ["tv", "movie"]:
                     title_display = item.get("title") or item.get("name") or item.get("original_title") or item.get("original_name")
@@ -104,12 +103,9 @@ def ejecutar_busqueda_tmdb(query_text: str):
                     poster = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
                     
                     tmdb_id = item.get("id")
-                    label_type = "📺" if media_type == "tv" else "🎬"
-                    year_str = f" ({year})" if year else ""
+                    label_type = "📺 Serie" if media_type == "tv" else "🎬 Película"
                     
-                    txt_mostrar = f"{label_type} {title_display}{year_str}"
-                    
-                    payload = {
+                    opciones.append({
                         "tmdb_id": tmdb_id,
                         "media_type": media_type,
                         "nombre": title_display,
@@ -117,9 +113,8 @@ def ejecutar_busqueda_tmdb(query_text: str):
                         "year": year,
                         "tipo": label_type,
                         "poster_url": poster
-                    }
-                    opciones.append((txt_mostrar, payload))
-    except Exception as e:
+                    })
+    except Exception:
         pass
         
     return opciones
@@ -151,77 +146,73 @@ def obtener_detalles_imdb(tmdb_id, media_type):
 
 # --- ENCABEZADO ---
 st.markdown("<h1 class='main-title'>🎬 StreamTracker Live</h1>", unsafe_allow_html=True)
-st.caption("✨ Títulos oficializados para Argentina + Notas de IMDb")
+st.caption("✨ Títulos comercializados en Argentina + Notas oficiales IMDb")
 
 st.divider()
 
-# --- INTERFAZ DE BÚSQUEDA ---
+# --- INTERFAZ DE BÚSQUEDA NATIVA ---
 st.subheader("🔍 Buscar Contenido")
 
-seleccion = None
+query_input = st.text_input("Escribe el nombre del título (ej: The Bear, Slow Horses, Harry Potter):", key="search_query_input")
 
-if HAS_SEARCHBOX:
-    seleccion = st_searchbox(
-        ejecutar_busqueda_tmdb,
-        key="imdb_searchbox_v2",
-        placeholder="Escribe para buscar (ej: The Bear, Harry Potter, Slow Horses)..."
-    )
-else:
-    # Sistema de respaldo si la librería searchbox no está cargada
-    query_manual = st.text_input("Escribe el nombre de la serie o película:")
-    if query_manual:
-        resultados = ejecutar_busqueda_tmdb(query_manual)
-        if resultados:
-            opciones_dict = {label: payload for label, payload in resultados}
-            elegido = st.selectbox("Selecciona un resultado:", list(opciones_dict.keys()))
-            if elegido:
-                seleccion = opciones_dict[elegido]
-
-# --- TARJETA PREVIA DE RESULTADO SELECCIONADO ---
-if seleccion:
-    col_prev_img, col_prev_info = st.columns([1, 3])
-    with col_prev_img:
-        if seleccion["poster_url"]:
-            st.image(seleccion["poster_url"], width=110)
-        else:
-            st.write("🖼️ Sin imagen")
-            
-    with col_prev_info:
-        st.markdown(f"### {seleccion['nombre']} ({seleccion['year']})")
-        if seleccion.get("original_title") and seleccion["original_title"] != seleccion["nombre"]:
-            st.caption(f"Original: *{seleccion['original_title']}*")
+if query_input:
+    resultados = ejecutar_busqueda_tmdb(query_input)
+    
+    if resultados:
+        st.write(f"**Resultados para:** *{query_input}*")
         
-        if st.button("➕ Agregar a mi colección", use_container_width=True, type="primary"):
-            with st.spinner("Consultando nota en IMDb..."):
-                imdb_id, rating_imdb, total_seasons = obtener_detalles_imdb(
-                    seleccion["tmdb_id"], 
-                    seleccion["media_type"]
-                )
+        for idx, item in enumerate(resultados):
+            with st.container():
+                col_p, col_i, col_b = st.columns([1, 2.5, 1.5])
                 
-                existe = False
-                for s in st.session_state.series:
-                    if (imdb_id and s.get("imdb_id") == imdb_id) or s["serie"].lower() == seleccion["nombre"].lower():
-                        s["rating_imdb"] = rating_imdb
-                        s["poster_url"] = seleccion["poster_url"]
-                        existe = True
-                        break
-                
-                if not existe:
-                    st.session_state.series.append({
-                        "serie": seleccion["nombre"],
-                        "imdb_id": imdb_id,
-                        "temp_vista": 1,
-                        "temp_totales": total_seasons,
-                        "estado": "Viendo",
-                        "rating": 5,
-                        "rating_imdb": rating_imdb,
-                        "poster_url": seleccion["poster_url"],
-                        "notas": f"Original: {seleccion['original_title']}" if seleccion.get("original_title") != seleccion["nombre"] else ""
-                    })
-                
-                guardar_datos(st.session_state.series)
-                st.success(f"¡{seleccion['nombre']} agregada a tu colección!")
-                st.rerun()
+                with col_p:
+                    if item["poster_url"]:
+                        st.image(item["poster_url"], width=75)
+                    else:
+                        st.write("🖼️ Sin imagen")
+                        
+                with col_i:
+                    year_str = f" ({item['year']})" if item['year'] else ""
+                    st.markdown(f"**{item['nombre']}**{year_str}")
+                    st.caption(f"{item['tipo']}")
+                    if item['original_title'] != item['nombre']:
+                        st.caption(f"Original: *{item['original_title']}*")
+                        
+                with col_b:
+                    if st.button("➕ Agregar", key=f"btn_add_{item['tmdb_id']}_{idx}", type="primary"):
+                        with st.spinner("Obteniendo calificación..."):
+                            imdb_id, rating_imdb, total_seasons = obtener_detalles_imdb(
+                                item["tmdb_id"], 
+                                item["media_type"]
+                            )
+                            
+                            existe = False
+                            for s in st.session_state.series:
+                                if (imdb_id and s.get("imdb_id") == imdb_id) or s["serie"].lower() == item["nombre"].lower():
+                                    s["rating_imdb"] = rating_imdb
+                                    s["poster_url"] = item["poster_url"]
+                                    existe = True
+                                    break
+                            
+                            if not existe:
+                                st.session_state.series.append({
+                                    "serie": item["nombre"],
+                                    "imdb_id": imdb_id,
+                                    "temp_vista": 1,
+                                    "temp_totales": total_seasons,
+                                    "estado": "Viendo",
+                                    "rating": 5,
+                                    "rating_imdb": rating_imdb,
+                                    "poster_url": item["poster_url"],
+                                    "notas": f"Original: {item['original_title']}" if item.get("original_title") != item["nombre"] else ""
+                                })
+                            
+                            guardar_datos(st.session_state.series)
+                            st.success(f"¡Agregada!")
+                            st.rerun()
+                st.divider()
+    else:
+        st.warning("No se encontraron resultados para esta búsqueda.")
 
 st.divider()
 

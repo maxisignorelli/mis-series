@@ -41,13 +41,6 @@ st.markdown("""
         font-size: 0.85rem;
         display: inline-block;
     }
-    .result-card {
-        background-color: #1e293b;
-        padding: 10px;
-        border-radius: 8px;
-        margin-bottom: 10px;
-        border: 1px solid #334155;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -70,93 +63,108 @@ def guardar_datos(datos):
 if "series" not in st.session_state:
     st.session_state.series = cargar_datos()
 
-TMDB_KEY = "15d2ea6d0dc1d476efb2532d8b1b513e"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-def ejecutar_busqueda_tmdb(query_text: str):
+# --- BÚSQUEDA MULTI-FUENTE A PRUEBA DE BLOQUEOS ---
+def ejecutar_busqueda_sin_bloqueo(query_text: str):
     if not query_text or len(query_text.strip()) < 2:
         return []
     
     opciones = []
+    q_clean = query_text.strip()
+    
+    # Intento 1: API Directa de TVMaze / IMDb (Libre y rápida)
     try:
-        q_clean = urllib.parse.quote(query_text.strip())
-        url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={q_clean}&language=es-AR&region=AR&page=1&include_adult=false"
+        url_tv = f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(q_clean)}"
+        res_tv = requests.get(url_tv, headers=HEADERS, timeout=4)
         
-        response = requests.get(url, headers=HEADERS, timeout=5)
-        
-        if response.status_code == 200:
-            data = response.json()
-            results = data.get("results", [])
-            
-            for item in results[:6]:
-                media_type = item.get("media_type")
-                if media_type in ["tv", "movie"]:
-                    title_display = item.get("title") or item.get("name") or item.get("original_title") or item.get("original_name")
-                    original_title = item.get("original_title") or item.get("original_name") or title_display
-                    
-                    release_date = item.get("release_date") or item.get("first_air_date") or ""
-                    year = release_date.split("-")[0] if release_date else ""
-                    
-                    poster_path = item.get("poster_path")
-                    poster = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
-                    
-                    tmdb_id = item.get("id")
-                    label_type = "📺 Serie" if media_type == "tv" else "🎬 Película"
-                    
+        if res_tv.status_code == 200:
+            shows = res_tv.json()
+            for item in shows[:6]:
+                show = item.get("show", {})
+                nombre = show.get("name")
+                imdb_id = show.get("externals", {}).get("imdb")
+                rating = show.get("rating", {}).get("average")
+                
+                premiered = show.get("premiered", "")
+                year = premiered.split("-")[0] if premiered else ""
+                
+                image_dict = show.get("image") or {}
+                poster = image_dict.get("medium") or image_dict.get("original") or ""
+                
+                if nombre:
                     opciones.append({
-                        "tmdb_id": tmdb_id,
-                        "media_type": media_type,
-                        "nombre": title_display,
-                        "original_title": original_title,
+                        "nombre": nombre,
+                        "imdb_id": imdb_id,
                         "year": year,
-                        "tipo": label_type,
-                        "poster_url": poster
+                        "tipo": "📺 Serie",
+                        "poster_url": poster,
+                        "rating_imdb": rating,
+                        "temp_totales": 1
                     })
     except Exception:
         pass
-        
+
+    # Intento 2: API Abierta OMDb pública de respaldo para Películas si no encontró suficientes
+    if len(opciones) < 3:
+        try:
+            url_omdb = f"https://www.omdbapi.com/?apikey=trilogy&s={urllib.parse.quote(q_clean)}"
+            res_omdb = requests.get(url_omdb, headers=HEADERS, timeout=4)
+            if res_omdb.status_code == 200:
+                data = res_omdb.json()
+                if data.get("Response") == "True":
+                    for item in data.get("Search", [])[:5]:
+                        imdb_id = item.get("imdbID")
+                        nombre = item.get("Title")
+                        year = item.get("Year", "")
+                        type_str = "🎬 Película" if item.get("Type") == "movie" else "📺 Serie"
+                        poster = item.get("Poster")
+                        if poster == "N/A":
+                            poster = ""
+                        
+                        # Evitar duplicados
+                        if not any(o.get("imdb_id") == imdb_id for o in opciones):
+                            opciones.append({
+                                "nombre": nombre,
+                                "imdb_id": imdb_id,
+                                "year": year,
+                                "tipo": type_str,
+                                "poster_url": poster,
+                                "rating_imdb": None,
+                                "temp_totales": 1
+                            })
+        except Exception:
+            pass
+
     return opciones
 
-def obtener_detalles_imdb(tmdb_id, media_type):
-    imdb_id = None
-    rating = None
-    seasons = 1
-    
+def obtener_rating_imdb_faltante(imdb_id):
+    if not imdb_id:
+        return None
     try:
-        url_ext = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/external_ids?api_key={TMDB_KEY}"
-        res_ext = requests.get(url_ext, headers=HEADERS, timeout=4).json()
-        imdb_id = res_ext.get("imdb_id")
-        
-        if media_type == "tv":
-            url_detail = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_KEY}"
-            res_det = requests.get(url_detail, headers=HEADERS, timeout=4).json()
-            seasons = res_det.get("number_of_seasons", 1)
-            
-        if imdb_id:
-            url_maze = f"https://api.tvmaze.com/lookup/shows?imdb={imdb_id}"
-            res_maze = requests.get(url_maze, headers=HEADERS, timeout=4).json()
-            if res_maze and "rating" in res_maze:
-                rating = res_maze.get("rating", {}).get("average")
+        url = f"https://www.omdbapi.com/?apikey=trilogy&i={imdb_id}"
+        res = requests.get(url, headers=HEADERS, timeout=3).json()
+        if res.get("Response") == "True":
+            return res.get("imdbRating")
     except Exception:
         pass
-        
-    return imdb_id, rating, seasons
+    return None
 
 # --- ENCABEZADO ---
 st.markdown("<h1 class='main-title'>🎬 StreamTracker Live</h1>", unsafe_allow_html=True)
-st.caption("✨ Títulos comercializados en Argentina + Notas oficiales IMDb")
+st.caption("✨ Catálogo universal con puntuaciones reales de IMDb")
 
 st.divider()
 
-# --- INTERFAZ DE BÚSQUEDA NATIVA ---
+# --- INTERFAZ DE BÚSQUEDA ---
 st.subheader("🔍 Buscar Contenido")
 
-query_input = st.text_input("Escribe el nombre del título (ej: The Bear, Slow Horses, Harry Potter):", key="search_query_input")
+query_input = st.text_input("Escribe el nombre del título (ej: Harry Potter, The Bear, Slow Horses):", key="search_query_input")
 
 if query_input:
-    resultados = ejecutar_busqueda_tmdb(query_input)
+    resultados = ejecutar_busqueda_sin_bloqueo(query_input)
     
     if resultados:
         st.write(f"**Resultados para:** *{query_input}*")
@@ -175,21 +183,20 @@ if query_input:
                     year_str = f" ({item['year']})" if item['year'] else ""
                     st.markdown(f"**{item['nombre']}**{year_str}")
                     st.caption(f"{item['tipo']}")
-                    if item['original_title'] != item['nombre']:
-                        st.caption(f"Original: *{item['original_title']}*")
+                    if item.get("rating_imdb"):
+                        st.markdown(f"<span class='imdb-badge'>IMDb {item['rating_imdb']}</span>", unsafe_allow_html=True)
                         
                 with col_b:
-                    if st.button("➕ Agregar", key=f"btn_add_{item['tmdb_id']}_{idx}", type="primary"):
-                        with st.spinner("Obteniendo calificación..."):
-                            imdb_id, rating_imdb, total_seasons = obtener_detalles_imdb(
-                                item["tmdb_id"], 
-                                item["media_type"]
-                            )
+                    if st.button("➕ Agregar", key=f"btn_add_{idx}", type="primary"):
+                        with st.spinner("Guardando en tu colección..."):
+                            rating_final = item.get("rating_imdb")
+                            if not rating_final and item.get("imdb_id"):
+                                rating_final = obtener_rating_imdb_faltante(item["imdb_id"])
                             
                             existe = False
                             for s in st.session_state.series:
-                                if (imdb_id and s.get("imdb_id") == imdb_id) or s["serie"].lower() == item["nombre"].lower():
-                                    s["rating_imdb"] = rating_imdb
+                                if (item["imdb_id"] and s.get("imdb_id") == item["imdb_id"]) or s["serie"].lower() == item["nombre"].lower():
+                                    s["rating_imdb"] = rating_final
                                     s["poster_url"] = item["poster_url"]
                                     existe = True
                                     break
@@ -197,14 +204,14 @@ if query_input:
                             if not existe:
                                 st.session_state.series.append({
                                     "serie": item["nombre"],
-                                    "imdb_id": imdb_id,
+                                    "imdb_id": item["imdb_id"],
                                     "temp_vista": 1,
-                                    "temp_totales": total_seasons,
+                                    "temp_totales": item.get("temp_totales", 1),
                                     "estado": "Viendo",
                                     "rating": 5,
-                                    "rating_imdb": rating_imdb,
+                                    "rating_imdb": rating_final,
                                     "poster_url": item["poster_url"],
-                                    "notas": f"Original: {item['original_title']}" if item.get("original_title") != item["nombre"] else ""
+                                    "notas": ""
                                 })
                             
                             guardar_datos(st.session_state.series)

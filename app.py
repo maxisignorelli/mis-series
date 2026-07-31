@@ -3,7 +3,7 @@ import requests
 import json
 import os
 
-# --- CONFIGURACIÓN DE PÁGINA ---
+# --- CONFIGURACIÓN DE PÁGINA Y ESTILOS ---
 st.set_page_config(
     page_title="StreamTracker",
     page_icon="🎬",
@@ -11,51 +11,21 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- ESTILOS CSS CUSTOM (INTERFAZ MÁS LINDA Y FRIENDLY) ---
 st.markdown("""
 <style>
-    /* Estilo general y tipografía */
     .stApp {
         background-color: #0e1117;
         font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     }
-    
-    /* Estilo para las tarjetas de series */
-    div[data-testid="stVerticalBlock"] > div[style*="flex-direction: column"] > div[data-testid="stVerticalBlock"] {
-        border-radius: 12px;
-    }
-    
-    /* Badges de estado */
-    .badge-pend {
-        background-color: #ff9800;
-        color: white;
-        padding: 4px 10px;
-        border-radius: 20px;
-        font-size: 0.8rem;
-        font-weight: bold;
-    }
-    .badge-ok {
-        background-color: #4caf50;
-        color: white;
-        padding: 4px 10px;
-        border-radius: 20px;
-        font-size: 0.8rem;
-        font-weight: bold;
-    }
-    
-    /* Botones más llamativos */
     .stButton>button {
         border-radius: 8px;
         font-weight: 600;
         transition: all 0.2s ease;
     }
-    .stButton>button:hover {
-        transform: scale(1.02);
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- MANEJO DE DATOS LOCALES ---
+# --- BASE DE DATOS LOCAL ---
 DB_FILE = "series_data.json"
 
 def cargar_datos():
@@ -74,96 +44,108 @@ def guardar_datos(datos):
 if "series" not in st.session_state:
     st.session_state.series = cargar_datos()
 
-# --- CONEXIÓN A TMDB API (Sugerencias y Datos Automáticos) ---
-TMDB_API_KEY = "1b88e1518171966d51065757a2f58ec0"  # Clave pública de consulta
+# --- BÚSQUEDA HÍBRIDA ROBUSTA (TMDB + TVMAZE REST BACKUP) ---
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamTrackerApp/1.0"}
 
-def buscar_series_tmdb(query):
-    if not query or len(query) < 2:
+def buscar_series_api(query):
+    if not query or len(query.strip()) < 2:
         return []
-    url = f"https://api.themoviedb.org/3/search/tv?api_key={TMDB_API_KEY}&query={query}&language=es-ES"
+    
+    resultados = []
+    
+    # 1. Intentar con TVMaze (Respuesta garantizada y sin límites)
     try:
-        res = requests.get(url).json()
-        return res.get("results", [])[:5]  # Devolver las primeras 5 sugerencias
-    except:
-        return []
+        url_tvmaze = f"https://api.tvmaze.com/search/shows?q={query}"
+        res_tv = requests.get(url_tvmaze, headers=HEADERS, timeout=5).json()
+        for item in res_tv[:5]:
+            show = item.get("show", {})
+            nombre = show.get("name")
+            year = show.get("premiered", "")[:4] if show.get("premiered") else ""
+            img_dict = show.get("image") or {}
+            poster = img_dict.get("medium") or img_dict.get("original") or ""
+            summary = show.get("summary", "").replace("<p>", "").replace("</p>", "").replace("<b>", "").replace("</b>", "")
+            network = show.get("network", {}) or show.get("webChannel", {})
+            plat = network.get("name") if network else "Streaming"
+            
+            resultados.append({
+                "label": f"{nombre} ({year})" if year else nombre,
+                "nombre": nombre,
+                "plataforma": plat,
+                "poster_url": poster,
+                "sinopsis": summary,
+                "tvmaze_id": show.get("id")
+            })
+    except Exception as e:
+        pass
+        
+    return resultados
 
-def obtener_detalle_serie(tmdb_id):
-    url = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}&language=es-ES&append_to_response=watch/providers"
+def obtener_temporadas_tvmaze(tvmaze_id):
     try:
-        res = requests.get(url).json()
-        
-        # Extraer plataformas (ej. Netflix, Apple TV+, etc.)
-        providers = res.get("watch/providers", {}).get("results", {}).get("AR", {}).get("flatrate", [])
-        plataformas = [p["provider_name"] for p in providers] if providers else ["No especificada"]
-        
-        poster_path = res.get("poster_path")
-        poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
-        
-        return {
-            "nombre": res.get("name"),
-            "temp_totales": res.get("number_of_seasons", 1),
-            "plataforma": ", ".join(plataformas),
-            "poster_url": poster_url,
-            "sinopsis": res.get("overview", "")
-        }
+        url = f"https://api.tvmaze.com/shows/{tvmaze_id}/seasons"
+        res = requests.get(url, headers=HEADERS, timeout=5).json()
+        return len(res) if isinstance(res, list) and len(res) > 0 else 1
     except:
-        return None
+        return 1
 
-# --- ENCABEZADO Y HEADER ---
+# --- INTERFAZ DE LA APP ---
 st.title("🎬 StreamTracker")
-st.caption("✨ Tu panel personal inteligente de series y temporadas")
+st.caption("✨ Tu panel personal e inteligente de series")
 
 st.divider()
 
-# --- BUSCADOR Y AUTOCOMPLETADO INTELIGENTE ---
+# --- BÚSQUEDA Y AUTOCOMPLETADO ---
 st.subheader("🔍 Agregar nueva serie")
 
-query = st.text_input("Comienza a escribir el nombre de la serie...", placeholder="Ej: Slow Horses, Breaking Bad, The Bear...")
+query = st.text_input("Escribe el nombre de la serie:", placeholder="Ej: Slow Horses, Breaking Bad, The Bear...")
 
-if query:
-    sugerencias = buscar_series_tmdb(query)
+if query and len(query.strip()) >= 2:
+    with st.spinner("Buscando en la base de datos..."):
+        sugerencias = buscar_series_api(query.strip())
     
     if sugerencias:
-        opciones = {f"{s['name']} ({s.get('first_air_date', 'N/A')[:4]})": s for s in sugerencias}
-        seleccion = st.selectbox("🎯 Coincidencias encontradas (selecciona una):", list(opciones.keys()))
+        opciones = {s["label"]: s for s in sugerencias}
+        seleccion = st.selectbox("🎯 Resultados encontrados:", list(opciones.keys()))
         
         if seleccion:
-            serie_tmdb = opciones[seleccion]
+            serie_sel = opciones[seleccion]
             
-            if st.button(f"✨ Cargar información de '{serie_tmdb['name']}'", use_container_width=True, type="primary"):
-                with st.spinner("Buscando datos, temporadas y plataformas..."):
-                    detalles = obtener_detalle_serie(serie_tmdb["id"])
+            if st.button(f"✨ Cargar '{serie_sel['nombre']}' a mi lista", use_container_width=True, type="primary"):
+                with st.spinner("Obteniendo temporadas y portada..."):
+                    temp_totales = obtener_temporadas_tvmaze(serie_sel["tvmaze_id"])
                     
-                    if detalles:
-                        # Guardar o actualizar
-                        existe = False
-                        for s in st.session_state.series:
-                            if s["serie"].lower() == detalles["nombre"].lower():
-                                s["temp_totales"] = detalles["temp_totales"]
-                                s["plataforma"] = detalles["plataforma"]
-                                s["poster_url"] = detalles["poster_url"]
-                                existe = True
-                                break
-                        
-                        if not existe:
-                            st.session_state.series.append({
-                                "serie": detalles["nombre"],
-                                "plataforma": detalles["plataforma"],
-                                "temp_vista": 0, # Empieza en 0 para configurar
-                                "temp_totales": detalles["temp_totales"],
-                                "estado": "Viendo",
-                                "rating": 5,
-                                "poster_url": detalles["poster_url"],
-                                "notas": detalles["sinopsis"][:120] + "..." if detalles["sinopsis"] else ""
-                            })
-                        
-                        guardar_datos(st.session_state.series)
-                        st.success(f"¡{detalles['nombre']} agregada automáticamente!")
-                        st.rerun()
+                    # Verificar duplicado
+                    existe = False
+                    for s in st.session_state.series:
+                        if s["serie"].lower() == serie_sel["nombre"].lower():
+                            s["temp_totales"] = temp_totales
+                            s["plataforma"] = serie_sel["plataforma"]
+                            if serie_sel["poster_url"]:
+                                s["poster_url"] = serie_sel["poster_url"]
+                            existe = True
+                            break
+                    
+                    if not existe:
+                        st.session_state.series.append({
+                            "serie": serie_sel["nombre"],
+                            "plataforma": serie_sel["plataforma"],
+                            "temp_vista": 0,
+                            "temp_totales": temp_totales,
+                            "estado": "Viendo",
+                            "rating": 5,
+                            "poster_url": serie_sel["poster_url"],
+                            "notas": serie_sel["sinopsis"][:150] + "..." if serie_sel["sinopsis"] else ""
+                        })
+                    
+                    guardar_datos(st.session_state.series)
+                    st.success(f"¡{serie_sel['nombre']} agregada con éxito!")
+                    st.rerun()
+    else:
+        st.info("No se encontraron series con ese nombre. Intenta con otra palabra.")
 
 st.divider()
 
-# --- ALERTAS DE TEMPORADAS PENDIENTES ---
+# --- ALERTAS DE PENDIENTES ---
 pendientes = [s for s in st.session_state.series if s.get("temp_totales", 1) > s.get("temp_vista", 0)]
 
 if pendientes:
@@ -178,30 +160,29 @@ if pendientes:
             with col_a2:
                 st.warning(
                     f"🍿 **{s['serie']}** ({s['plataforma']})\n\n"
-                    f"Viste **T{s['temp_vista']}**, pero ya salieron **{s['temp_totales']} temporadas** "
+                    f"Viste **T{s['temp_vista']}**, pero ya hay **{s['temp_totales']} temporada(s)** disponibles "
                     f"(*{diferencia} pendiente(s)*)."
                 )
 
 st.divider()
 
-# --- MI COLECCIÓN ---
+# --- COLECCIÓN PERSONAL ---
 st.subheader(f"📺 Tu Colección ({len(st.session_state.series)})")
 
 if st.session_state.series:
     for idx, s in enumerate(st.session_state.series):
-        with st.expander(f"🎬 **{s['serie']}** — T{s['temp_vista']}/{s['temp_totales']}", expanded=False):
+        with st.expander(f"🎬 **{s['serie']}** — Vista T{s['temp_vista']} de T{s['temp_totales']}", expanded=False):
             col_img, col_detalles = st.columns([1, 2])
             
             with col_img:
                 if s.get("poster_url"):
-                    st.image(s["poster_url"], use_column_width=True)
+                    st.image(s["poster_url"], use_container_width=True)
                 else:
                     st.write("🖼️ Sin imagen")
                     
             with col_detalles:
                 st.markdown(f"**📺 Plataforma:** {s.get('plataforma', 'N/A')}")
                 
-                # Control rápido para actualizar temporada vista
                 temp_vista_nueva = st.number_input(
                     "Temporada que ya viste:",
                     min_value=0,

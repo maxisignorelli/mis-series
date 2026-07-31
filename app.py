@@ -100,7 +100,24 @@ def formatear_fecha(fecha_str):
     except:
         return fecha_str
 
-# --- BÚSQUEDA Y DATOS DESDE TVMAZE (CON BÚSQUEDA LOCALIZADA ARGENTINA) ---
+# --- TRADUCCIÓN LOCALIZADA PARA ARGENTINA ---
+def obtener_titulo_espanol(tvmaze_id, nombre_original):
+    try:
+        # Intenta obtener alias/títulos locales para Argentina / Latinoamérica
+        url_alias = f"https://api.tvmaze.com/shows/{tvmaze_id}/akas"
+        res_alias = requests.get(url_alias, headers=HEADERS, timeout=3).json()
+        if isinstance(res_alias, list):
+            for item in res_alias:
+                country = (item.get("country") or {}).get("code", "")
+                if country in ["AR", "MX", "ES"] and item.get("name"):
+                    return item.get("name")
+                if item.get("name") and any(c in item.get("name") for c in ["á", "é", "í", "ó", "ú", "ñ"]):
+                    return item.get("name")
+    except Exception:
+        pass
+    return nombre_original
+
+# --- BÚSQUEDA COMPLETA Y DINÁMICA ---
 def buscar_series_api(query):
     if not query or len(query.strip()) < 2:
         return []
@@ -110,21 +127,24 @@ def buscar_series_api(query):
         url_tvmaze = f"https://api.tvmaze.com/search/shows?q={query}"
         res_tv = requests.get(url_tvmaze, headers=HEADERS, timeout=5).json()
         
-        for item in res_tv[:6]:
+        # Trae TODOS los resultados de la búsqueda sin cortar a 5
+        for item in res_tv:
             show = item.get("show", {})
-            nombre = show.get("name")
+            show_id = show.get("id")
+            nombre_original = show.get("name", "")
             
-            # Nombre traducido si está disponible
+            # Título traducido al español para Argentina
+            nombre_es = obtener_titulo_espanol(show_id, nombre_original)
+            
             year = show.get("premiered", "")[:4] if show.get("premiered") else ""
             img_dict = show.get("image") or {}
             poster = img_dict.get("medium") or img_dict.get("original") or ""
             summary = show.get("summary", "").replace("<p>", "").replace("</p>", "").replace("<b>", "").replace("</b>", "")
             
-            # Plataforma ajustada
             network = show.get("network", {}) or show.get("webChannel", {})
             plat = network.get("name") if network else "Streaming"
             
-            # Mapeo de plataformas de EE.UU. a plataformas disponibles en Argentina
+            # Mapeo regional para Argentina
             plat_lower = plat.lower()
             if "hulu" in plat_lower or "fx" in plat_lower:
                 plat = "Disney+"
@@ -133,17 +153,16 @@ def buscar_series_api(query):
             elif "peacock" in plat_lower:
                 plat = "Universal+ / Prime Video"
 
-            # Rating IMDb
             rating_imdb = show.get("rating", {}).get("average")
             imdb_str = f"⭐ {rating_imdb}" if rating_imdb else "N/A"
 
             resultados.append({
-                "label": f"🎬 {nombre} ({year}) — IMDb: {imdb_str}",
-                "nombre": nombre,
+                "label": f"🎬 {nombre_es} ({year}) — IMDb: {imdb_str}",
+                "nombre": nombre_es,
                 "plataforma": plat,
                 "poster_url": poster,
                 "sinopsis": summary,
-                "tvmaze_id": show.get("id"),
+                "tvmaze_id": show_id,
                 "rating_imdb": rating_imdb
             })
     except Exception:
@@ -158,7 +177,6 @@ def analizar_temporadas_y_capitulos(tvmaze_id):
     hoy = datetime.now().strftime("%Y-%m-%d")
     
     try:
-        # Obtener episodios
         url_episodes = f"https://api.tvmaze.com/shows/{tvmaze_id}/episodes"
         res_episodes = requests.get(url_episodes, headers=HEADERS, timeout=5).json()
         
@@ -178,7 +196,6 @@ def analizar_temporadas_y_capitulos(tvmaze_id):
 
             disponibles = len(temporadas_emitidas) if temporadas_emitidas else 1
             
-            # Obtener temporadas futuras
             url_seasons = f"https://api.tvmaze.com/shows/{tvmaze_id}/seasons"
             res_seasons = requests.get(url_seasons, headers=HEADERS, timeout=5).json()
             if isinstance(res_seasons, list):
@@ -200,9 +217,10 @@ st.caption("✨ Tu catálogo de series y películas adaptado al streaming local"
 
 st.divider()
 
-# --- BÚSQUEDA INSTANTÁNEA ---
+# --- BÚSQUEDA INSTANTÁNEA Y LISTA COMPLETA ---
 st.subheader("🔍 Buscar Serie o Película")
 
+# Búsqueda dinámica mientras se escribe
 query = st.text_input(
     "Escribe el nombre:", 
     placeholder="Empieza a escribir (ej: Harry Potter, Slow Horses, El Encargado)...",
@@ -215,8 +233,9 @@ if query and len(query.strip()) >= 2:
     if sugerencias:
         opciones_dict = {s["label"]: s for s in sugerencias}
         
+        # Desplegable scrolleable con TODAS las opciones encontradas
         seleccion = st.selectbox(
-            "👇 Sugerencias encontradas:", 
+            f"👇 Coincidencias encontradas ({len(sugerencias)} resultados - descorré para ver todas):", 
             list(opciones_dict.keys()),
             key="select_sugerencia"
         )
@@ -272,11 +291,11 @@ if query and len(query.strip()) >= 2:
                         st.success(f"¡{serie_sel['nombre']} agregada!")
                         st.rerun()
     else:
-        st.info("No se encontraron coincidencias.")
+        st.info("No se encontraron coincidencias para la búsqueda.")
 
 st.divider()
 
-# --- COLECCIÓN CON DESGLOSE DE CAPÍTULOS Y RATING ---
+# --- COLECCIÓN PRINCIPAL ---
 st.subheader(f"📺 Tu Colección ({len(st.session_state.series)})")
 
 if st.session_state.series:
@@ -302,7 +321,6 @@ if st.session_state.series:
             with col_detalles:
                 st.markdown(f"Plataforma: {logo_html}", unsafe_allow_html=True)
                 
-                # Calificaciones
                 col_r1, col_r2 = st.columns(2)
                 with col_r1:
                     if s.get("rating_imdb"):
@@ -314,7 +332,6 @@ if st.session_state.series:
 
                 st.divider()
 
-                # Desglose de capítulos por temporada
                 st.markdown("**📂 Detalle de Capítulos por Temporada:**")
                 caps_dict = s.get("capitulos_detalle", {})
                 if caps_dict:
@@ -330,7 +347,6 @@ if st.session_state.series:
 
                 st.divider()
                 
-                # Edición rápida
                 temp_vista_nueva = st.number_input(
                     "Última temporada vista:",
                     min_value=0,

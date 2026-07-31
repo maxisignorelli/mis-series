@@ -6,13 +6,13 @@ from streamlit_searchbox import st_searchbox
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="StreamTracker — Catálogo Argentina",
+    page_title="StreamTracker Live",
     page_icon="🎬",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
 
-# --- ESTILOS CSS PERSONALIZADOS ---
+# --- ESTILOS CSS ---
 st.markdown("""
 <style>
     .stApp {
@@ -52,7 +52,7 @@ def cargar_datos():
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except:
+        except Exception:
             return []
     return []
 
@@ -66,75 +66,52 @@ if "series" not in st.session_state:
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamTrackerApp/1.0"
 }
-
 TMDB_KEY = "15d2ea6d0dc1d476efb2532d8b1b513e"
 
-def obtener_nombre_argentina(tmdb_id, media_type, title_default, original_title):
-    """
-    Busca el título con el que fue lanzado/distribuido específicamente en Argentina (AR).
-    Si no hay título específico comercial para AR, usa el título original o el por defecto.
-    """
-    try:
-        url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/alternative_titles?api_key={TMDB_KEY}"
-        res = requests.get(url, headers=HEADERS, timeout=2).json()
-        
-        results = res.get("titles" if media_type == "movie" else "results", [])
-        for item in results:
-            if item.get("iso_3166_1") == "AR":
-                title_ar = item.get("title")
-                if title_ar:
-                    return title_ar
-    except Exception:
-        pass
-    
-    # Criterio inteligente para Argentina:
-    # Si el título por defecto es igual al original o muy similar, mantenemos el nombre comercial internacional.
-    return title_default if title_default else original_title
-
-# --- BÚSQUEDA EN TIEMPO REAL CON NOMBRES DE LANZAMIENTO AR ---
-def buscar_imdb_live(search_term: str):
+# --- BÚSQUEDA EN TIEMPO REAL (LIGERA Y ROBUSTA) ---
+def buscar_live(search_term: str):
     if not search_term or len(search_term.strip()) < 2:
         return []
     
     opciones = []
     try:
         q_clean = search_term.strip()
+        # Consultamos TMDB con region=AR y lenguaje es-MX/es-AR para títulos locales
+        url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={q_clean}&language=es-MX&region=AR&page=1&include_adult=false"
+        res = requests.get(url, headers=HEADERS, timeout=3)
         
-        # Búsqueda general considerando mercado regional
-        url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={q_clean}&page=1&include_adult=false&region=AR"
-        res = requests.get(url, headers=HEADERS, timeout=3).json()
-        
-        results = res.get("results", [])
-        for item in results[:8]:
-            media_type = item.get("media_type")
-            if media_type in ["tv", "movie"]:
-                title_base = item.get("title") or item.get("name") or ""
-                original_title = item.get("original_title") or item.get("original_name") or title_base
-                tmdb_id = item.get("id")
-                
-                # Obtener la denominación oficial lanzada en Argentina
-                nombre_ar = obtener_nombre_argentina(tmdb_id, media_type, title_base, original_title)
-                
-                release_date = item.get("release_date") or item.get("first_air_date") or ""
-                year = release_date.split("-")[0] if release_date else ""
-                
-                poster_path = item.get("poster_path")
-                poster = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
-                
-                label_type = "📺" if media_type == "tv" else "🎬"
-                year_str = f" ({year})" if year else ""
-                
-                txt_mostrar = f"{label_type} {nombre_ar}{year_str}"
-                
-                opciones.append((txt_mostrar, {
-                    "tmdb_id": tmdb_id,
-                    "media_type": media_type,
-                    "nombre": nombre_ar,
-                    "original_title": original_title,
-                    "year": year,
-                    "tipo": label_type,
-                    "poster_url": poster
-                }))
+        if res.status_code == 200:
+            data = res.json()
+            results = data.get("results", [])
+            
+            for item in results[:8]:
+                media_type = item.get("media_type")
+                if media_type in ["tv", "movie"]:
+                    # Lógica de nombre: prefiere el título traducido/comercial, fallback al original
+                    title_display = item.get("title") or item.get("name") or item.get("original_title") or item.get("original_name")
+                    original_title = item.get("original_title") or item.get("original_name") or title_display
+                    
+                    release_date = item.get("release_date") or item.get("first_air_date") or ""
+                    year = release_date.split("-")[0] if release_date else ""
+                    
+                    poster_path = item.get("poster_path")
+                    poster = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+                    
+                    tmdb_id = item.get("id")
+                    label_type = "📺" if media_type == "tv" else "🎬"
+                    year_str = f" ({year})" if year else ""
+                    
+                    txt_mostrar = f"{label_type} {title_display}{year_str}"
+                    
+                    opciones.append((txt_mostrar, {
+                        "tmdb_id": tmdb_id,
+                        "media_type": media_type,
+                        "nombre": title_display,
+                        "original_title": original_title,
+                        "year": year,
+                        "tipo": label_type,
+                        "poster_url": poster
+                    }))
     except Exception:
         pass
         
@@ -146,18 +123,15 @@ def obtener_detalles_imdb(tmdb_id, media_type):
     seasons = 1
     
     try:
-        # 1. Obtener external_ids para sacar el ID de IMDb
         url_ext = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/external_ids?api_key={TMDB_KEY}"
         res_ext = requests.get(url_ext, headers=HEADERS, timeout=3).json()
         imdb_id = res_ext.get("imdb_id")
         
-        # 2. Si es serie, consultar número de temporadas
         if media_type == "tv":
             url_detail = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_KEY}"
             res_det = requests.get(url_detail, headers=HEADERS, timeout=3).json()
             seasons = res_det.get("number_of_seasons", 1)
             
-        # 3. Obtener el rating oficial de IMDb
         if imdb_id:
             url_maze = f"https://api.tvmaze.com/lookup/shows?imdb={imdb_id}"
             res_maze = requests.get(url_maze, headers=HEADERS, timeout=3).json()
@@ -170,7 +144,7 @@ def obtener_detalles_imdb(tmdb_id, media_type):
 
 # --- ENCABEZADO ---
 st.markdown("<h1 class='main-title'>🎬 StreamTracker Live</h1>", unsafe_allow_html=True)
-st.caption("✨ Nombres oficiales de estreno en Argentina + Puntuación IMDb")
+st.caption("✨ Buscador instantáneo con notas oficiales de IMDb")
 
 st.divider()
 
@@ -178,9 +152,9 @@ st.divider()
 st.subheader("🔍 Buscar Contenido")
 
 seleccion = st_searchbox(
-    buscar_imdb_live,
+    buscar_live,
     key="imdb_searchbox",
-    placeholder="Escribe el nombre (ej: The Bear, Harry Potter, Slow Horses, El Encargado)..."
+    placeholder="Escribe para buscar (ej: The Bear, Harry Potter, Slow Horses)..."
 )
 
 if seleccion:
@@ -287,4 +261,4 @@ if st.session_state.series:
                         guardar_datos(st.session_state.series)
                         st.rerun()
 else:
-    st.info("Tu colección está vacía. ¡Empieza a escribir en el buscador para agregar series y películas!")
+    st.info("Tu colección está vacía. ¡Escribe en el buscador arriba para agregar algo!")

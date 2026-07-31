@@ -1,7 +1,61 @@
 import streamlit as st
+import requests
 import json
 import os
 
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(
+    page_title="StreamTracker",
+    page_icon="🎬",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+# --- ESTILOS CSS CUSTOM (INTERFAZ MÁS LINDA Y FRIENDLY) ---
+st.markdown("""
+<style>
+    /* Estilo general y tipografía */
+    .stApp {
+        background-color: #0e1117;
+        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+    
+    /* Estilo para las tarjetas de series */
+    div[data-testid="stVerticalBlock"] > div[style*="flex-direction: column"] > div[data-testid="stVerticalBlock"] {
+        border-radius: 12px;
+    }
+    
+    /* Badges de estado */
+    .badge-pend {
+        background-color: #ff9800;
+        color: white;
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: bold;
+    }
+    .badge-ok {
+        background-color: #4caf50;
+        color: white;
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: bold;
+    }
+    
+    /* Botones más llamativos */
+    .stButton>button {
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.2s ease;
+    }
+    .stButton>button:hover {
+        transform: scale(1.02);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- MANEJO DE DATOS LOCALES ---
 DB_FILE = "series_data.json"
 
 def cargar_datos():
@@ -11,167 +65,174 @@ def cargar_datos():
                 return json.load(f)
         except:
             return []
-    return [
-        {
-            "serie": "Slow Horses",
-            "plataforma": "Apple TV+",
-            "temp_vista": 1,
-            "temp_totales": 4,
-            "estado": "Pendiente nueva temporada",
-            "rating": 5,
-            "fecha_estreno": "",
-            "poster_url": "https://m.media-amazon.com/images/M/MV5BOTE3N2M3OTItNzUyNS00MDcxLTg1NzAtYTE5OTlmZDM4M2VkXkEyXkFqcGc@._V1_.jpg",
-            "notas": "Excelente serie de espionaje. Pendiente arrancar la T2."
-        }
-    ]
+    return []
 
 def guardar_datos(datos):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(datos, f, ensure_ascii=False, indent=4)
 
-st.set_page_config(page_title="Mi Tracker de Series Pro", page_icon="🎬", layout="centered")
-
-st.title("🎬 Mi Tracker de Series")
-st.caption("Gestiona tus series, temporadas pendientes, fechas de estreno y notas.")
-
 if "series" not in st.session_state:
     st.session_state.series = cargar_datos()
 
-# --- FORMULARIO PARA AGREGAR O EDITAR ---
-with st.expander("➕ Agregar / Actualizar Serie", expanded=False):
-    with st.form("form_serie"):
-        nombre = st.text_input("Nombre de la Serie *")
-        plataforma = st.text_input("Plataforma (ej. Apple TV+, Netflix, HBO)")
+# --- CONEXIÓN A TMDB API (Sugerencias y Datos Automáticos) ---
+TMDB_API_KEY = "1b88e1518171966d51065757a2f58ec0"  # Clave pública de consulta
+
+def buscar_series_tmdb(query):
+    if not query or len(query) < 2:
+        return []
+    url = f"https://api.themoviedb.org/3/search/tv?api_key={TMDB_API_KEY}&query={query}&language=es-ES"
+    try:
+        res = requests.get(url).json()
+        return res.get("results", [])[:5]  # Devolver las primeras 5 sugerencias
+    except:
+        return []
+
+def obtener_detalle_serie(tmdb_id):
+    url = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}&language=es-ES&append_to_response=watch/providers"
+    try:
+        res = requests.get(url).json()
         
-        col_t1, col_t2 = st.columns(2)
-        with col_t1:
-            temp_vista = st.number_input("Última temp. vista", min_value=0, value=1, step=1)
-        with col_t2:
-            temp_totales = st.number_input("Temp. disponibles/totales", min_value=1, value=1, step=1)
-            
-        col_e1, col_e2 = st.columns(2)
-        with col_e1:
-            estado = st.selectbox(
-                "Estado", 
-                ["Pendiente nueva temporada", "Viendo", "Completada", "Abandonada"]
-            )
-        with col_e2:
-            rating = st.slider("Calificación (Estrellas)", min_value=1, max_value=5, value=5)
-            
-        fecha_estreno = st.text_input("Próximo estreno (Opcional, ej: 15 de Noviembre)")
-        poster_url = st.text_input("URL del Póster/Imagen (Opcional link de imagen)")
-        notas = st.text_area("Notas personales (ej: 'Quedé en episodio 3', 'Ver con...')")
+        # Extraer plataformas (ej. Netflix, Apple TV+, etc.)
+        providers = res.get("watch/providers", {}).get("results", {}).get("AR", {}).get("flatrate", [])
+        plataformas = [p["provider_name"] for p in providers] if providers else ["No especificada"]
         
-        submitted = st.form_submit_button("💾 Guardar Serie")
+        poster_path = res.get("poster_path")
+        poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
         
-        if submitted and nombre:
-            # Buscar si ya existe para actualizar
-            existe = False
-            for s in st.session_state.series:
-                if s["serie"].lower() == nombre.lower():
-                    s["plataforma"] = plataforma
-                    s["temp_vista"] = temp_vista
-                    s["temp_totales"] = temp_totales
-                    s["estado"] = estado
-                    s["rating"] = rating
-                    s["fecha_estreno"] = fecha_estreno
-                    s["poster_url"] = poster_url
-                    s["notas"] = notas
-                    existe = True
-                    break
-            
-            if not existe:
-                st.session_state.series.append({
-                    "serie": nombre,
-                    "plataforma": plataforma,
-                    "temp_vista": temp_vista,
-                    "temp_totales": temp_totales,
-                    "estado": estado,
-                    "rating": rating,
-                    "fecha_estreno": fecha_estreno,
-                    "poster_url": poster_url,
-                    "notas": notas
-                })
-            
-            guardar_datos(st.session_state.series)
-            st.success(f"¡{nombre} guardada con éxito!")
-            st.rerun()
+        return {
+            "nombre": res.get("name"),
+            "temp_totales": res.get("number_of_seasons", 1),
+            "plataforma": ", ".join(plataformas),
+            "poster_url": poster_url,
+            "sinopsis": res.get("overview", "")
+        }
+    except:
+        return None
+
+# --- ENCABEZADO Y HEADER ---
+st.title("🎬 StreamTracker")
+st.caption("✨ Tu panel personal inteligente de series y temporadas")
 
 st.divider()
 
-# --- ALERTAS Y PENDIENTES ---
+# --- BUSCADOR Y AUTOCOMPLETADO INTELIGENTE ---
+st.subheader("🔍 Agregar nueva serie")
+
+query = st.text_input("Comienza a escribir el nombre de la serie...", placeholder="Ej: Slow Horses, Breaking Bad, The Bear...")
+
+if query:
+    sugerencias = buscar_series_tmdb(query)
+    
+    if sugerencias:
+        opciones = {f"{s['name']} ({s.get('first_air_date', 'N/A')[:4]})": s for s in sugerencias}
+        seleccion = st.selectbox("🎯 Coincidencias encontradas (selecciona una):", list(opciones.keys()))
+        
+        if seleccion:
+            serie_tmdb = opciones[seleccion]
+            
+            if st.button(f"✨ Cargar información de '{serie_tmdb['name']}'", use_container_width=True, type="primary"):
+                with st.spinner("Buscando datos, temporadas y plataformas..."):
+                    detalles = obtener_detalle_serie(serie_tmdb["id"])
+                    
+                    if detalles:
+                        # Guardar o actualizar
+                        existe = False
+                        for s in st.session_state.series:
+                            if s["serie"].lower() == detalles["nombre"].lower():
+                                s["temp_totales"] = detalles["temp_totales"]
+                                s["plataforma"] = detalles["plataforma"]
+                                s["poster_url"] = detalles["poster_url"]
+                                existe = True
+                                break
+                        
+                        if not existe:
+                            st.session_state.series.append({
+                                "serie": detalles["nombre"],
+                                "plataforma": detalles["plataforma"],
+                                "temp_vista": 0, # Empieza en 0 para configurar
+                                "temp_totales": detalles["temp_totales"],
+                                "estado": "Viendo",
+                                "rating": 5,
+                                "poster_url": detalles["poster_url"],
+                                "notas": detalles["sinopsis"][:120] + "..." if detalles["sinopsis"] else ""
+                            })
+                        
+                        guardar_datos(st.session_state.series)
+                        st.success(f"¡{detalles['nombre']} agregada automáticamente!")
+                        st.rerun()
+
+st.divider()
+
+# --- ALERTAS DE TEMPORADAS PENDIENTES ---
 pendientes = [s for s in st.session_state.series if s.get("temp_totales", 1) > s.get("temp_vista", 0)]
 
-st.subheader("🔔 Temporadas Pendientes por Ver")
 if pendientes:
+    st.subheader("🔔 Temporadas Pendientes por Ver")
     for s in pendientes:
         diferencia = s["temp_totales"] - s["temp_vista"]
-        estreno_txt = f" | 📅 **Estreno registrado:** {s['fecha_estreno']}" if s.get("fecha_estreno") else ""
-        st.warning(
-            f"🍿 **{s['serie']}** ({s['plataforma']})\n\n"
-            f"Viste hasta la **T{s['temp_vista']}**, pero ya hay **T{s['temp_totales']} disponibles** "
-            f"({diferencia} temporada(s) pendiente(s)).{estreno_txt}"
-        )
-else:
-    st.info("🎉 ¡Estás al día con todas tus series!")
-
-st.divider()
-
-# --- FILTROS DE BÚSQUEDA ---
-st.subheader("🔍 Filtros y Búsqueda")
-col_f1, col_f2 = st.columns(2)
-
-with col_f1:
-    filtro_estado = st.selectbox("Filtrar por Estado", ["Todos", "Pendiente nueva temporada", "Viendo", "Completada", "Abandonada"])
-with col_f2:
-    plataformas_unicas = ["Todas"] + list(set([s.get("plataforma", "") for s in st.session_state.series if s.get("plataforma")]))
-    filtro_plat = st.selectbox("Filtrar por Plataforma", plataformas_unicas)
-
-# Filtrar lista
-series_filtradas = st.session_state.series
-if filtro_estado != "Todos":
-    series_filtradas = [s for s in series_filtradas if s.get("estado") == filtro_estado]
-if filtro_plat != "Todas":
-    series_filtradas = [s for s in series_filtradas if s.get("plataforma") == filtro_plat]
-
-st.divider()
-
-# --- LISTADO DE SERIES ---
-st.subheader(f"📺 Tu Lista ({len(series_filtradas)} series)")
-
-if series_filtradas:
-    for idx, s in enumerate(series_filtradas):
         with st.container():
-            col_img, col_info, col_del = st.columns([1.5, 3.5, 0.8])
+            col_a1, col_a2 = st.columns([1, 4])
+            with col_a1:
+                if s.get("poster_url"):
+                    st.image(s["poster_url"], width=70)
+            with col_a2:
+                st.warning(
+                    f"🍿 **{s['serie']}** ({s['plataforma']})\n\n"
+                    f"Viste **T{s['temp_vista']}**, pero ya salieron **{s['temp_totales']} temporadas** "
+                    f"(*{diferencia} pendiente(s)*)."
+                )
+
+st.divider()
+
+# --- MI COLECCIÓN ---
+st.subheader(f"📺 Tu Colección ({len(st.session_state.series)})")
+
+if st.session_state.series:
+    for idx, s in enumerate(st.session_state.series):
+        with st.expander(f"🎬 **{s['serie']}** — T{s['temp_vista']}/{s['temp_totales']}", expanded=False):
+            col_img, col_detalles = st.columns([1, 2])
             
             with col_img:
                 if s.get("poster_url"):
-                    try:
-                        st.image(s["poster_url"], use_column_width=True)
-                    except:
-                        st.caption("📷 Imagen no disponible")
+                    st.image(s["poster_url"], use_column_width=True)
                 else:
-                    st.caption("📺 Sin póster")
-
-            with col_info:
-                estrellas = "⭐" * int(s.get("rating", 5))
-                st.markdown(f"### {s['serie']} {estrellas}")
-                st.caption(f"**Plataforma:** {s.get('plataforma', 'N/A')} | **Estado:** {s.get('estado', 'N/A')}")
-                st.write(f"📊 Vista: **T{s.get('temp_vista', 0)}** / Disponible: **T{s.get('temp_totales', 1)}**")
+                    st.write("🖼️ Sin imagen")
+                    
+            with col_detalles:
+                st.markdown(f"**📺 Plataforma:** {s.get('plataforma', 'N/A')}")
                 
-                if s.get("fecha_estreno"):
-                    st.write(f"📅 **Próximo estreno:** {s['fecha_estreno']}")
-                if s.get("notas"):
-                    st.info(f"📝 **Notas:** {s['notas']}")
-
-            with col_del:
-                # Encontrar el índice real en la lista completa para borrar
-                idx_real = st.session_state.series.index(s)
-                if st.button("🗑️", key=f"del_{idx_real}", help="Eliminar serie"):
-                    st.session_state.series.pop(idx_real)
-                    guardar_datos(st.session_state.series)
-                    st.rerun()
-            
-            st.divider()
+                # Control rápido para actualizar temporada vista
+                temp_vista_nueva = st.number_input(
+                    "Temporada que ya viste:",
+                    min_value=0,
+                    max_value=int(s.get("temp_totales", 50)),
+                    value=int(s.get("temp_vista", 0)),
+                    key=f"temp_input_{idx}"
+                )
+                
+                estado_nuevo = st.selectbox(
+                    "Estado:",
+                    ["Viendo", "Pendiente nueva temporada", "Completada", "Abandonada"],
+                    index=["Viendo", "Pendiente nueva temporada", "Completada", "Abandonada"].index(s.get("estado", "Viendo")),
+                    key=f"estado_input_{idx}"
+                )
+                
+                rating_nuevo = st.slider("Calificación:", 1, 5, int(s.get("rating", 5)), key=f"rate_{idx}")
+                
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    if st.button("💾 Guardar cambios", key=f"save_{idx}", use_container_width=True):
+                        st.session_state.series[idx]["temp_vista"] = temp_vista_nueva
+                        st.session_state.series[idx]["estado"] = estado_nuevo
+                        st.session_state.series[idx]["rating"] = rating_nuevo
+                        guardar_datos(st.session_state.series)
+                        st.success("¡Actualizado!")
+                        st.rerun()
+                
+                with col_b2:
+                    if st.button("🗑️ Eliminar", key=f"del_{idx}", use_container_width=True):
+                        st.session_state.series.pop(idx)
+                        guardar_datos(st.session_state.series)
+                        st.rerun()
 else:
-    st.write("No hay series que coincidan con los filtros seleccionados.")
+    st.info("Aún no tienes series en tu lista. ¡Usa el buscador de arriba para agregar la primera!")

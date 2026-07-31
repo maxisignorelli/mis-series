@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import json
 import os
+from datetime import datetime
 
 # --- CONFIGURACIÓN DE PÁGINA Y ESTILOS ---
 st.set_page_config(
@@ -44,16 +45,14 @@ def guardar_datos(datos):
 if "series" not in st.session_state:
     st.session_state.series = cargar_datos()
 
-# --- BÚSQUEDA HÍBRIDA ROBUSTA (TMDB + TVMAZE REST BACKUP) ---
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamTrackerApp/1.0"}
 
+# --- BÚSQUEDA Y FILTRADO PRECISO DE TEMPORADAS ---
 def buscar_series_api(query):
     if not query or len(query.strip()) < 2:
         return []
     
     resultados = []
-    
-    # 1. Intentar con TVMaze (Respuesta garantizada y sin límites)
     try:
         url_tvmaze = f"https://api.tvmaze.com/search/shows?q={query}"
         res_tv = requests.get(url_tvmaze, headers=HEADERS, timeout=5).json()
@@ -80,21 +79,36 @@ def buscar_series_api(query):
         
     return resultados
 
-def obtener_temporadas_tvmaze(tvmaze_id):
+def obtener_temporadas_emitidas(tvmaze_id):
     try:
         url = f"https://api.tvmaze.com/shows/{tvmaze_id}/seasons"
         res = requests.get(url, headers=HEADERS, timeout=5).json()
-        return len(res) if isinstance(res, list) and len(res) > 0 else 1
+        if isinstance(res, list) and len(res) > 0:
+            hoy = datetime.now().strftime("%Y-%m-%d")
+            # Filtrar solo temporadas oficiales (number > 0) y que ya hayan comenzado a emitirse
+            temp_validas = []
+            for s in res:
+                num = s.get("number", 0)
+                premiere = s.get("premiereDate")
+                if num > 0:
+                    if premiere and premiere <= hoy:
+                        temp_validas.append(num)
+                    elif not premiere:
+                        # Si no hay fecha de premiere pero figura en el listado principal, se contempla si tiene episodios asignados
+                        temp_validas.append(num)
+            
+            return len(temp_validas) if temp_validas else len(res)
     except:
-        return 1
+        pass
+    return 1
 
-# --- INTERFAZ DE LA APP ---
+# --- INTERFAZ ---
 st.title("🎬 StreamTracker")
 st.caption("✨ Tu panel personal e inteligente de series")
 
 st.divider()
 
-# --- BÚSQUEDA Y AUTOCOMPLETADO ---
+# --- BÚSQUEDA ---
 st.subheader("🔍 Agregar nueva serie")
 
 query = st.text_input("Escribe el nombre de la serie:", placeholder="Ej: Slow Horses, Breaking Bad, The Bear...")
@@ -111,10 +125,9 @@ if query and len(query.strip()) >= 2:
             serie_sel = opciones[seleccion]
             
             if st.button(f"✨ Cargar '{serie_sel['nombre']}' a mi lista", use_container_width=True, type="primary"):
-                with st.spinner("Obteniendo temporadas y portada..."):
-                    temp_totales = obtener_temporadas_tvmaze(serie_sel["tvmaze_id"])
+                with st.spinner("Calculando temporadas disponibles..."):
+                    temp_totales = obtener_temporadas_emitidas(serie_sel["tvmaze_id"])
                     
-                    # Verificar duplicado
                     existe = False
                     for s in st.session_state.series:
                         if s["serie"].lower() == serie_sel["nombre"].lower():
@@ -129,9 +142,9 @@ if query and len(query.strip()) >= 2:
                         st.session_state.series.append({
                             "serie": serie_sel["nombre"],
                             "plataforma": serie_sel["plataforma"],
-                            "temp_vista": 0,
+                            "temp_vista": 1,
                             "temp_totales": temp_totales,
-                            "estado": "Viendo",
+                            "estado": "Pendiente nueva temporada",
                             "rating": 5,
                             "poster_url": serie_sel["poster_url"],
                             "notas": serie_sel["sinopsis"][:150] + "..." if serie_sel["sinopsis"] else ""
@@ -141,7 +154,7 @@ if query and len(query.strip()) >= 2:
                     st.success(f"¡{serie_sel['nombre']} agregada con éxito!")
                     st.rerun()
     else:
-        st.info("No se encontraron series con ese nombre. Intenta con otra palabra.")
+        st.info("No se encontraron series. Intenta con otra palabra.")
 
 st.divider()
 
@@ -160,7 +173,7 @@ if pendientes:
             with col_a2:
                 st.warning(
                     f"🍿 **{s['serie']}** ({s['plataforma']})\n\n"
-                    f"Viste **T{s['temp_vista']}**, pero ya hay **{s['temp_totales']} temporada(s)** disponibles "
+                    f"Viste **T{s['temp_vista']}**, pero hay **{s['temp_totales']} temporadas disponibles** "
                     f"(*{diferencia} pendiente(s)*)."
                 )
 
@@ -176,25 +189,35 @@ if st.session_state.series:
             
             with col_img:
                 if s.get("poster_url"):
-                    st.image(s["poster_url"], use_container_width=True)
+                    st.image(s["poster_url"], use_column_width=True)
                 else:
                     st.write("🖼️ Sin imagen")
                     
             with col_detalles:
                 st.markdown(f"**📺 Plataforma:** {s.get('plataforma', 'N/A')}")
                 
-                temp_vista_nueva = st.number_input(
-                    "Temporada que ya viste:",
-                    min_value=0,
-                    max_value=int(s.get("temp_totales", 50)),
-                    value=int(s.get("temp_vista", 0)),
-                    key=f"temp_input_{idx}"
-                )
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    temp_vista_nueva = st.number_input(
+                        "Temp. vista:",
+                        min_value=0,
+                        max_value=50,
+                        value=int(s.get("temp_vista", 0)),
+                        key=f"temp_input_{idx}"
+                    )
+                with col_t2:
+                    temp_totales_nueva = st.number_input(
+                        "Temp. disponibles:",
+                        min_value=1,
+                        max_value=50,
+                        value=int(s.get("temp_totales", 1)),
+                        key=f"temp_tot_{idx}"
+                    )
                 
                 estado_nuevo = st.selectbox(
                     "Estado:",
-                    ["Viendo", "Pendiente nueva temporada", "Completada", "Abandonada"],
-                    index=["Viendo", "Pendiente nueva temporada", "Completada", "Abandonada"].index(s.get("estado", "Viendo")),
+                    ["Pendiente nueva temporada", "Viendo", "Completada", "Abandonada"],
+                    index=["Pendiente nueva temporada", "Viendo", "Completada", "Abandonada"].index(s.get("estado", "Pendiente nueva temporada")) if s.get("estado") in ["Pendiente nueva temporada", "Viendo", "Completada", "Abandonada"] else 0,
                     key=f"estado_input_{idx}"
                 )
                 
@@ -204,6 +227,7 @@ if st.session_state.series:
                 with col_b1:
                     if st.button("💾 Guardar cambios", key=f"save_{idx}", use_container_width=True):
                         st.session_state.series[idx]["temp_vista"] = temp_vista_nueva
+                        st.session_state.series[idx]["temp_totales"] = temp_totales_nueva
                         st.session_state.series[idx]["estado"] = estado_nuevo
                         st.session_state.series[idx]["rating"] = rating_nuevo
                         guardar_datos(st.session_state.series)

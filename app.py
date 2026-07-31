@@ -2,7 +2,14 @@ import streamlit as st
 import requests
 import json
 import os
-from streamlit_searchbox import st_searchbox
+import urllib.parse
+
+# Intento de importar el componente searchbox
+try:
+    from streamlit_searchbox import st_searchbox
+    HAS_SEARCHBOX = True
+except ImportError:
+    HAS_SEARCHBOX = False
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -63,31 +70,30 @@ def guardar_datos(datos):
 if "series" not in st.session_state:
     st.session_state.series = cargar_datos()
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamTrackerApp/1.0"
-}
 TMDB_KEY = "15d2ea6d0dc1d476efb2532d8b1b513e"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
-# --- BÚSQUEDA EN TIEMPO REAL (LIGERA Y ROBUSTA) ---
-def buscar_live(search_term: str):
-    if not search_term or len(search_term.strip()) < 2:
+# --- FUNCIÓN DE BÚSQUEDA CORE ---
+def ejecutar_busqueda_tmdb(query_text: str):
+    if not query_text or len(query_text.strip()) < 2:
         return []
     
     opciones = []
     try:
-        q_clean = search_term.strip()
-        # Consultamos TMDB con region=AR y lenguaje es-MX/es-AR para títulos locales
-        url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={q_clean}&language=es-MX&region=AR&page=1&include_adult=false"
-        res = requests.get(url, headers=HEADERS, timeout=3)
+        q_clean = urllib.parse.quote(query_text.strip())
+        url = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_KEY}&query={q_clean}&language=es-AR&region=AR&page=1&include_adult=false"
         
-        if res.status_code == 200:
-            data = res.json()
+        response = requests.get(url, headers=HEADERS, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
             results = data.get("results", [])
             
             for item in results[:8]:
                 media_type = item.get("media_type")
                 if media_type in ["tv", "movie"]:
-                    # Lógica de nombre: prefiere el título traducido/comercial, fallback al original
                     title_display = item.get("title") or item.get("name") or item.get("original_title") or item.get("original_name")
                     original_title = item.get("original_title") or item.get("original_name") or title_display
                     
@@ -103,7 +109,7 @@ def buscar_live(search_term: str):
                     
                     txt_mostrar = f"{label_type} {title_display}{year_str}"
                     
-                    opciones.append((txt_mostrar, {
+                    payload = {
                         "tmdb_id": tmdb_id,
                         "media_type": media_type,
                         "nombre": title_display,
@@ -111,8 +117,9 @@ def buscar_live(search_term: str):
                         "year": year,
                         "tipo": label_type,
                         "poster_url": poster
-                    }))
-    except Exception:
+                    }
+                    opciones.append((txt_mostrar, payload))
+    except Exception as e:
         pass
         
     return opciones
@@ -124,17 +131,17 @@ def obtener_detalles_imdb(tmdb_id, media_type):
     
     try:
         url_ext = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/external_ids?api_key={TMDB_KEY}"
-        res_ext = requests.get(url_ext, headers=HEADERS, timeout=3).json()
+        res_ext = requests.get(url_ext, headers=HEADERS, timeout=4).json()
         imdb_id = res_ext.get("imdb_id")
         
         if media_type == "tv":
             url_detail = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_KEY}"
-            res_det = requests.get(url_detail, headers=HEADERS, timeout=3).json()
+            res_det = requests.get(url_detail, headers=HEADERS, timeout=4).json()
             seasons = res_det.get("number_of_seasons", 1)
             
         if imdb_id:
             url_maze = f"https://api.tvmaze.com/lookup/shows?imdb={imdb_id}"
-            res_maze = requests.get(url_maze, headers=HEADERS, timeout=3).json()
+            res_maze = requests.get(url_maze, headers=HEADERS, timeout=4).json()
             if res_maze and "rating" in res_maze:
                 rating = res_maze.get("rating", {}).get("average")
     except Exception:
@@ -144,19 +151,33 @@ def obtener_detalles_imdb(tmdb_id, media_type):
 
 # --- ENCABEZADO ---
 st.markdown("<h1 class='main-title'>🎬 StreamTracker Live</h1>", unsafe_allow_html=True)
-st.caption("✨ Buscador instantáneo con notas oficiales de IMDb")
+st.caption("✨ Títulos oficializados para Argentina + Notas de IMDb")
 
 st.divider()
 
-# --- BÚSQUEDA INSTANTÁNEA ---
+# --- INTERFAZ DE BÚSQUEDA ---
 st.subheader("🔍 Buscar Contenido")
 
-seleccion = st_searchbox(
-    buscar_live,
-    key="imdb_searchbox",
-    placeholder="Escribe para buscar (ej: The Bear, Harry Potter, Slow Horses)..."
-)
+seleccion = None
 
+if HAS_SEARCHBOX:
+    seleccion = st_searchbox(
+        ejecutar_busqueda_tmdb,
+        key="imdb_searchbox_v2",
+        placeholder="Escribe para buscar (ej: The Bear, Harry Potter, Slow Horses)..."
+    )
+else:
+    # Sistema de respaldo si la librería searchbox no está cargada
+    query_manual = st.text_input("Escribe el nombre de la serie o película:")
+    if query_manual:
+        resultados = ejecutar_busqueda_tmdb(query_manual)
+        if resultados:
+            opciones_dict = {label: payload for label, payload in resultados}
+            elegido = st.selectbox("Selecciona un resultado:", list(opciones_dict.keys()))
+            if elegido:
+                seleccion = opciones_dict[elegido]
+
+# --- TARJETA PREVIA DE RESULTADO SELECCIONADO ---
 if seleccion:
     col_prev_img, col_prev_info = st.columns([1, 3])
     with col_prev_img:
@@ -261,4 +282,4 @@ if st.session_state.series:
                         guardar_datos(st.session_state.series)
                         st.rerun()
 else:
-    st.info("Tu colección está vacía. ¡Escribe en el buscador arriba para agregar algo!")
+    st.info("Tu colección está vacía. Escribe arriba en la búsqueda para añadir títulos.")

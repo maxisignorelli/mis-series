@@ -2,11 +2,11 @@ import streamlit as st
 import requests
 import json
 import os
-from datetime import datetime
+from streamlit_searchbox import st_searchbox
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="StreamTracker — IMDb Search",
+    page_title="StreamTracker — IMDb Live",
     page_icon="🎬",
     layout="centered",
     initial_sidebar_state="collapsed"
@@ -41,11 +41,6 @@ st.markdown("""
         font-size: 0.85rem;
         display: inline-block;
     }
-    .logo-img {
-        height: 24px;
-        vertical-align: middle;
-        margin-right: 6px;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -70,63 +65,50 @@ if "series" not in st.session_state:
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamTrackerApp/1.0"}
 
-# --- BÚSQUEDA DIRECTA EN IMDb ---
-def buscar_en_imdb(query):
-    if not query or len(query.strip()) < 2:
+# --- FUNCIÓN DE BÚSQUEDA EN TIEMPO REAL (IMDb) ---
+def buscar_imdb_live(search_term: str):
+    if not search_term or len(search_term.strip()) < 2:
         return []
     
-    resultados = []
+    opciones = []
     try:
-        # Sugerencias públicas en tiempo real de IMDb
-        q_clean = query.strip().lower().replace(" ", "_")
+        q_clean = search_term.strip().lower().replace(" ", "_")
         url = f"https://v3.sg.media-imdb.com/suggestion/x/{q_clean}.json"
-        res = requests.get(url, headers=HEADERS, timeout=4).json()
+        res = requests.get(url, headers=HEADERS, timeout=3).json()
         
         items = res.get("d", [])
         for item in items:
-            # Filtrar solo películas (movie, feature) y series (tvSeries, tvMiniSeries)
             q_type = item.get("qid", "")
             if q_type in ["movie", "tvSeries", "tvMiniSeries", "tvSpecial"]:
-                imdb_id = item.get("id")
                 title = item.get("l")
                 year = item.get("y", "")
+                imdb_id = item.get("id")
                 
-                # Imagen de portada IMDb
                 i_dict = item.get("i", {})
                 poster = i_dict.get("imageUrl", "") if i_dict else ""
-                
-                # Reparto principal o directores
                 stars = item.get("s", "")
                 
-                # Obtener calificación y detalles vía ID de IMDb
-                rating_imdb, total_seasons = obtener_detalles_imdb(imdb_id)
+                label_type = "📺" if "tv" in q_type else "🎬"
+                txt_mostrar = f"{label_type} {title} ({year}) — {stars[:30]}"
                 
-                label_type = "📺 Serie" if "tv" in q_type else "🎬 Película"
-                imdb_str = f"⭐ {rating_imdb}" if rating_imdb else "N/A"
-                
-                label = f"{label_type}: {title} ({year}) — IMDb: {imdb_str}"
-                
-                resultados.append({
-                    "label": label,
+                # Guarda el objeto completo como valor seleccionado
+                opciones.append((txt_mostrar, {
                     "imdb_id": imdb_id,
                     "nombre": title,
                     "year": year,
                     "tipo": label_type,
                     "poster_url": poster,
-                    "rating_imdb": rating_imdb,
-                    "total_seasons": total_seasons,
                     "elenco": stars
-                })
+                }))
     except Exception:
         pass
         
-    return resultados
+    return opciones
 
-def obtener_detalles_imdb(imdb_id):
+def obtener_detalles_extra(imdb_id):
     rating = None
     seasons = 1
     try:
-        # Consulta complementaria a base IMDb para obtener rating y temporadas
         url = f"https://api.tvmaze.com/lookup/shows?imdb={imdb_id}"
         res = requests.get(url, headers=HEADERS, timeout=3).json()
         if res:
@@ -142,79 +124,62 @@ def obtener_detalles_imdb(imdb_id):
     return rating, seasons
 
 # --- ENCABEZADO ---
-st.markdown("<h1 class='main-title'>🎬 StreamTracker — IMDb Search</h1>", unsafe_allow_html=True)
-st.caption("✨ Búsqueda directa sobre la base de datos de IMDb")
+st.markdown("<h1 class='main-title'>🎬 StreamTracker Live</h1>", unsafe_allow_html=True)
+st.caption("✨ Búsqueda directa en vivo sobre la base de datos de IMDb")
 
 st.divider()
 
-# --- BÚSQUEDA INSTANTÁNEA IMDb ---
-st.subheader("🔍 Buscar Contenido en IMDb")
+# --- BÚSQUEDA INSTANTÁNEA EN VIVO (LETRA POR LETRA) ---
+st.subheader("🔍 Buscar Contenido")
 
-query = st.text_input(
-    "Escribe para buscar directamente en IMDb:", 
-    placeholder="Empieza a escribir (ej: Harry Potter, Slow Horses, El Encargado, Severance)...",
-    key="search_input"
+seleccion = st_searchbox(
+    buscar_imdb_live,
+    key="imdb_searchbox",
+    placeholder="Escribe el nombre de la serie o película..."
 )
 
-if query and len(query.strip()) >= 2:
-    sugerencias = buscar_en_imdb(query.strip())
-    
-    if sugerencias:
-        opciones_dict = {s["label"]: s for s in sugerencias}
-        
-        seleccion = st.selectbox(
-            f"👇 Coincidencias en IMDb ({len(sugerencias)} resultados):", 
-            list(opciones_dict.keys()),
-            key="select_sugerencia"
-        )
-        
-        if seleccion:
-            item_sel = opciones_dict[seleccion]
+if seleccion:
+    col_prev_img, col_prev_info = st.columns([1, 3])
+    with col_prev_img:
+        if seleccion["poster_url"]:
+            st.image(seleccion["poster_url"], width=110)
+        else:
+            st.write("🖼️ Sin imagen")
             
-            col_prev_img, col_prev_info = st.columns([1, 3])
-            with col_prev_img:
-                if item_sel["poster_url"]:
-                    st.image(item_sel["poster_url"], width=110)
-                else:
-                    st.write("🖼️ Sin imagen")
-            with col_prev_info:
-                st.markdown(f"### {item_sel['nombre']} ({item_sel['year']})")
+    with col_prev_info:
+        st.markdown(f"### {seleccion['nombre']} ({seleccion['year']})")
+        
+        if seleccion.get("elenco"):
+            st.caption(f"👥 **Reparto:** {seleccion['elenco']}")
+        
+        if st.button("➕ Agregar a mi colección", use_container_width=True, type="primary"):
+            with st.spinner("Obteniendo detalles de IMDb..."):
+                rating_imdb, total_seasons = obtener_detalles_extra(seleccion["imdb_id"])
                 
-                if item_sel.get("rating_imdb"):
-                    st.markdown(f"<span class='imdb-badge'>IMDb {item_sel['rating_imdb']} / 10</span>", unsafe_allow_html=True)
-                else:
-                    st.caption("IMDb Rating: No disponible")
+                existe = False
+                for s in st.session_state.series:
+                    if s.get("imdb_id") == seleccion["imdb_id"] or s["serie"].lower() == seleccion["nombre"].lower():
+                        s["rating_imdb"] = rating_imdb
+                        s["poster_url"] = seleccion["poster_url"]
+                        existe = True
+                        break
                 
-                if item_sel.get("elenco"):
-                    st.caption(f"👥 **Reparto:** {item_sel['elenco']}")
+                if not existe:
+                    st.session_state.series.append({
+                        "serie": seleccion["nombre"],
+                        "imdb_id": seleccion["imdb_id"],
+                        "temp_vista": 1,
+                        "temp_totales": total_seasons,
+                        "estado": "Viendo",
+                        "rating": 5,
+                        "rating_imdb": rating_imdb,
+                        "poster_url": seleccion["poster_url"],
+                        "notas": f"Elenco: {seleccion['elenco']}" if seleccion.get("elenco") else ""
+                    })
                 
-                if st.button("➕ Agregar a mi colección", use_container_width=True, type="primary"):
-                    existe = False
-                    for s in st.session_state.series:
-                        if s.get("imdb_id") == item_sel["imdb_id"] or s["serie"].lower() == item_sel["nombre"].lower():
-                            s["rating_imdb"] = item_sel["rating_imdb"]
-                            s["poster_url"] = item_sel["poster_url"]
-                            existe = True
-                            break
-                    
-                    if not existe:
-                        st.session_state.series.append({
-                            "serie": item_sel["nombre"],
-                            "imdb_id": item_sel["imdb_id"],
-                            "temp_vista": 1,
-                            "temp_totales": item_sel["total_seasons"],
-                            "estado": "Viendo",
-                            "rating": 5,
-                            "rating_imdb": item_sel["rating_imdb"],
-                            "poster_url": item_sel["poster_url"],
-                            "notas": f"Elenco: {item_sel['elenco']}" if item_sel.get("elenco") else ""
-                        })
-                    
-                    guardar_datos(st.session_state.series)
-                    st.success(f"¡{item_sel['nombre']} guardada correctamente!")
-                    st.rerun()
-    else:
-        st.info("Sin coincidencias en IMDb. Intenta con otra palabra.")
+                guardar_datos(st.session_state.series)
+                st.success(f"¡{seleccion['nombre']} agregada a tu colección!")
+                st.rerun()
 
 st.divider()
 
@@ -275,4 +240,4 @@ if st.session_state.series:
                         guardar_datos(st.session_state.series)
                         st.rerun()
 else:
-    st.info("Tu colección está vacía. ¡Busca cualquier serie o película en IMDb para comenzar!")
+    st.info("Tu colección está vacía. ¡Empieza a escribir en el buscador de arriba para agregar contenido!")

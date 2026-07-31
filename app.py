@@ -67,22 +67,22 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# --- BÚSQUEDA MULTI-FUENTE A PRUEBA DE BLOQUEOS ---
-def ejecutar_busqueda_sin_bloqueo(query_text: str):
+# --- BÚSQUEDA MULTI-FUENTE ---
+def ejecutar_busqueda_amplia(query_text: str):
     if not query_text or len(query_text.strip()) < 2:
         return []
     
     opciones = []
     q_clean = query_text.strip()
     
-    # Intento 1: API Directa de TVMaze / IMDb (Libre y rápida)
+    # 1. Búsqueda en TVMaze (Series)
     try:
         url_tv = f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(q_clean)}"
         res_tv = requests.get(url_tv, headers=HEADERS, timeout=4)
         
         if res_tv.status_code == 200:
             shows = res_tv.json()
-            for item in shows[:6]:
+            for item in shows:
                 show = item.get("show", {})
                 nombre = show.get("name")
                 imdb_id = show.get("externals", {}).get("imdb")
@@ -107,36 +107,35 @@ def ejecutar_busqueda_sin_bloqueo(query_text: str):
     except Exception:
         pass
 
-    # Intento 2: API Abierta OMDb pública de respaldo para Películas si no encontró suficientes
-    if len(opciones) < 3:
-        try:
-            url_omdb = f"https://www.omdbapi.com/?apikey=trilogy&s={urllib.parse.quote(q_clean)}"
-            res_omdb = requests.get(url_omdb, headers=HEADERS, timeout=4)
-            if res_omdb.status_code == 200:
-                data = res_omdb.json()
-                if data.get("Response") == "True":
-                    for item in data.get("Search", [])[:5]:
-                        imdb_id = item.get("imdbID")
-                        nombre = item.get("Title")
-                        year = item.get("Year", "")
-                        type_str = "🎬 Película" if item.get("Type") == "movie" else "📺 Serie"
-                        poster = item.get("Poster")
-                        if poster == "N/A":
-                            poster = ""
-                        
-                        # Evitar duplicados
-                        if not any(o.get("imdb_id") == imdb_id for o in opciones):
-                            opciones.append({
-                                "nombre": nombre,
-                                "imdb_id": imdb_id,
-                                "year": year,
-                                "tipo": type_str,
-                                "poster_url": poster,
-                                "rating_imdb": None,
-                                "temp_totales": 1
-                            })
-        except Exception:
-            pass
+    # 2. Búsqueda en OMDb (Películas y Series adicionales)
+    try:
+        url_omdb = f"https://www.omdbapi.com/?apikey=trilogy&s={urllib.parse.quote(q_clean)}"
+        res_omdb = requests.get(url_omdb, headers=HEADERS, timeout=4)
+        if res_omdb.status_code == 200:
+            data = res_omdb.json()
+            if data.get("Response") == "True":
+                for item in data.get("Search", []):
+                    imdb_id = item.get("imdbID")
+                    nombre = item.get("Title")
+                    year = item.get("Year", "")
+                    type_str = "🎬 Película" if item.get("Type") == "movie" else "📺 Serie"
+                    poster = item.get("Poster")
+                    if poster == "N/A":
+                        poster = ""
+                    
+                    # Evitar duplicados por id de IMDb
+                    if not any(o.get("imdb_id") == imdb_id for o in opciones):
+                        opciones.append({
+                            "nombre": nombre,
+                            "imdb_id": imdb_id,
+                            "year": year,
+                            "tipo": type_str,
+                            "poster_url": poster,
+                            "rating_imdb": None,
+                            "temp_totales": 1
+                        })
+    except Exception:
+        pass
 
     return opciones
 
@@ -152,6 +151,47 @@ def obtener_rating_imdb_faltante(imdb_id):
         pass
     return None
 
+def renderizar_item_resultado(item, idx, prefix="main"):
+    col_i, col_b = st.columns([3, 1])
+    
+    with col_i:
+        year_str = f" ({item['year']})" if item['year'] else ""
+        st.markdown(f"**{item['nombre']}**{year_str}  ·  *{item['tipo']}*")
+        if item.get("rating_imdb"):
+            st.markdown(f"<span class='imdb-badge'>IMDb {item['rating_imdb']}</span>", unsafe_allow_html=True)
+            
+    with col_b:
+        if st.button("➕ Agregar", key=f"btn_add_{prefix}_{idx}", type="primary", use_container_width=True):
+            with st.spinner("Guardando..."):
+                rating_final = item.get("rating_imdb")
+                if not rating_final and item.get("imdb_id"):
+                    rating_final = obtener_rating_imdb_faltante(item["imdb_id"])
+                
+                existe = False
+                for s in st.session_state.series:
+                    if (item["imdb_id"] and s.get("imdb_id") == item["imdb_id"]) or s["serie"].lower() == item["nombre"].lower():
+                        s["rating_imdb"] = rating_final
+                        s["poster_url"] = item["poster_url"]
+                        existe = True
+                        break
+                
+                if not existe:
+                    st.session_state.series.append({
+                        "serie": item["nombre"],
+                        "imdb_id": item["imdb_id"],
+                        "temp_vista": 1,
+                        "temp_totales": item.get("temp_totales", 1),
+                        "estado": "Viendo",
+                        "rating": 5,
+                        "rating_imdb": rating_final,
+                        "poster_url": item["poster_url"],
+                        "notas": ""
+                    })
+                
+                guardar_datos(st.session_state.series)
+                st.success("¡Agregada!")
+                st.rerun()
+
 # --- ENCABEZADO ---
 st.markdown("<h1 class='main-title'>🎬 StreamTracker Live</h1>", unsafe_allow_html=True)
 st.caption("✨ Catálogo universal con puntuaciones reales de IMDb")
@@ -164,60 +204,25 @@ st.subheader("🔍 Buscar Contenido")
 query_input = st.text_input("Escribe el nombre del título (ej: Harry Potter, The Bear, Slow Horses):", key="search_query_input")
 
 if query_input:
-    resultados = ejecutar_busqueda_sin_bloqueo(query_input)
+    resultados = ejecutar_busqueda_amplia(query_input)
     
     if resultados:
         st.write(f"**Resultados para:** *{query_input}*")
         
-        for idx, item in enumerate(resultados):
-            with st.container():
-                col_p, col_i, col_b = st.columns([1, 2.5, 1.5])
-                
-                with col_p:
-                    if item["poster_url"]:
-                        st.image(item["poster_url"], width=75)
-                    else:
-                        st.write("🖼️ Sin imagen")
-                        
-                with col_i:
-                    year_str = f" ({item['year']})" if item['year'] else ""
-                    st.markdown(f"**{item['nombre']}**{year_str}")
-                    st.caption(f"{item['tipo']}")
-                    if item.get("rating_imdb"):
-                        st.markdown(f"<span class='imdb-badge'>IMDb {item['rating_imdb']}</span>", unsafe_allow_html=True)
-                        
-                with col_b:
-                    if st.button("➕ Agregar", key=f"btn_add_{idx}", type="primary"):
-                        with st.spinner("Guardando en tu colección..."):
-                            rating_final = item.get("rating_imdb")
-                            if not rating_final and item.get("imdb_id"):
-                                rating_final = obtener_rating_imdb_faltante(item["imdb_id"])
-                            
-                            existe = False
-                            for s in st.session_state.series:
-                                if (item["imdb_id"] and s.get("imdb_id") == item["imdb_id"]) or s["serie"].lower() == item["nombre"].lower():
-                                    s["rating_imdb"] = rating_final
-                                    s["poster_url"] = item["poster_url"]
-                                    existe = True
-                                    break
-                            
-                            if not existe:
-                                st.session_state.series.append({
-                                    "serie": item["nombre"],
-                                    "imdb_id": item["imdb_id"],
-                                    "temp_vista": 1,
-                                    "temp_totales": item.get("temp_totales", 1),
-                                    "estado": "Viendo",
-                                    "rating": 5,
-                                    "rating_imdb": rating_final,
-                                    "poster_url": item["poster_url"],
-                                    "notas": ""
-                                })
-                            
-                            guardar_datos(st.session_state.series)
-                            st.success(f"¡Agregada!")
-                            st.rerun()
-                st.divider()
+        primeros_cinco = resultados[:5]
+        resto_resultados = resultados[5:]
+        
+        # Muestra los primeros 5 directo en pantalla (solo texto)
+        for idx, item in enumerate(primeros_cinco):
+            renderizar_item_resultado(item, idx, prefix="top")
+            st.divider()
+            
+        # Si hay más de 5, genera un desplegable
+        if resto_resultados:
+            with st.expander(f"➕ Ver más resultados ({len(resto_resultados)} adicionales)"):
+                for idx, item in enumerate(resto_resultados):
+                    renderizar_item_resultado(item, idx, prefix="more")
+                    st.divider()
     else:
         st.warning("No se encontraron resultados para esta búsqueda.")
 

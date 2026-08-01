@@ -106,7 +106,7 @@ def buscar_imdb_live(search_term: str):
         
     return opciones
 
-# --- OBTENCIÓN DE DETALLES Y FILTRADO DE TEMPORADAS DISPONIBLES ---
+# --- FILTRADO ESTRICTO DE TEMPORADAS LANZADAS ---
 def obtener_detalles_extra(imdb_id):
     rating = None
     seasons = 1
@@ -127,17 +127,14 @@ def obtener_detalles_extra(imdb_id):
                     for season in res_s:
                         premier_date_str = season.get("premiereDate")
                         
+                        # Solo cuenta si la fecha existe Y es anterior o igual a hoy
                         if premier_date_str:
                             try:
                                 fecha_estreno = datetime.strptime(premier_date_str, "%Y-%m-%d").date()
-                                # Solo contabiliza si la fecha de estreno ya pasó o es hoy
                                 if fecha_estreno <= hoy:
                                     temporadas_emitidas += 1
                             except ValueError:
                                 pass
-                        elif season.get("number"):
-                            # Resguardo si no tiene fecha estipulada pero la temporada ya está emitida/numerada
-                            temporadas_emitidas += 1
                     
                     if temporadas_emitidas > 0:
                         seasons = temporadas_emitidas

@@ -4,9 +4,8 @@ import json
 import os
 from datetime import datetime
 from streamlit_searchbox import st_searchbox
-from streamlit_star_rating import st_star_rating
 
-# --- CONFIGURACIÓN DE PÁGINA (WIDE LAYOUT) ---
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="StreamTracker — Estilo JustWatch",
     page_icon="🎬",
@@ -14,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- ESTILOS CSS PERSONALIZADOS ---
+# --- ESTILOS CSS ---
 st.markdown("""
 <style>
     .stApp {
@@ -97,7 +96,7 @@ st.markdown("""
 DB_FILE = "series_data.json"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamTrackerApp/1.0"}
 
-# --- FUNCIÓN COMPLETA DE DETALLES ---
+# --- OBTENER DETALLES COMPLETOS ---
 def obtener_detalles_completos(imdb_id):
     info = {
         "rating_imdb": None,
@@ -198,13 +197,12 @@ def obtener_detalles_completos(imdb_id):
         
     return info
 
-# --- CARGAR/ACTUALIZAR DATOS LOCALES ---
+# --- CARGAR/AUTO-COMPLETAR DATOS LOCALES ---
 def cargar_datos():
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 datos = json.load(f)
-                # Auto-reparar elementos existentes que les falten los nuevos datos
                 modificado = False
                 for s in datos:
                     if "estado_serie" not in s or s.get("primer_episodio") in [None, "N/A"]:
@@ -399,15 +397,16 @@ with col_principal:
                             
                         st.divider()
                         
-                        # CALIFICACIÓN CON 10 ESTRELLAS SELECCIONABLES
+                        # CALIFICACIÓN EN ESTRELLAS (1 a 10)
                         st.markdown("##### ⭐ Tu Calificación Personal")
                         
-                        estrellas_seleccionadas = st_star_rating(
-                            label="Haz clic para calificar (1 a 10 estrellas):",
-                            maxValue=10,
-                            defaultValue=mi_nota,
-                            size=24,
-                            key=f"star_rating_{idx}"
+                        idx_defecto = max(0, min(mi_nota - 1, 9))
+                        calificacion_seleccionada = st.selectbox(
+                            "Puntuación (1 al 10):",
+                            options=list(range(1, 11)),
+                            format_func=lambda x: f"{'⭐' * x} ({x}/10)",
+                            index=idx_defecto,
+                            key=f"select_rating_{idx}"
                         )
                         
                         nueva_temp = st.number_input(
@@ -422,7 +421,7 @@ with col_principal:
                         with b_col1:
                             if st.button("💾 Guardar Cambios", key=f"btn_save_{idx}", use_container_width=True):
                                 st.session_state.series[idx]["temp_vista"] = nueva_temp
-                                st.session_state.series[idx]["rating"] = estrellas_seleccionadas if estrellas_seleccionadas else mi_nota
+                                st.session_state.series[idx]["rating"] = calificacion_seleccionada
                                 guardar_datos(st.session_state.series)
                                 st.success("¡Guardado!")
                                 st.rerun()

@@ -4,6 +4,7 @@ import json
 import os
 from datetime import datetime
 from streamlit_searchbox import st_searchbox
+from streamlit_star_rating import st_star_rating
 
 # --- CONFIGURACIÓN DE PÁGINA (WIDE LAYOUT) ---
 st.set_page_config(
@@ -93,14 +94,126 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- BASE DE DATOS LOCAL ---
 DB_FILE = "series_data.json"
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamTrackerApp/1.0"}
 
+# --- FUNCIÓN COMPLETA DE DETALLES ---
+def obtener_detalles_completos(imdb_id):
+    info = {
+        "rating_imdb": None,
+        "temp_totales": 1,
+        "generos": [],
+        "estado_serie": "Desconocido",
+        "primer_episodio": "N/A",
+        "ultimo_episodio": "N/A",
+        "actores": [],
+        "desglose_temporadas": []
+    }
+    
+    if not imdb_id:
+        return info
+
+    try:
+        url = f"https://api.tvmaze.com/lookup/shows?imdb={imdb_id}"
+        res = requests.get(url, headers=HEADERS, timeout=4).json()
+        
+        if res:
+            info["rating_imdb"] = res.get("rating", {}).get("average")
+            info["generos"] = res.get("genres", [])
+            
+            status_raw = res.get("status", "")
+            if status_raw == "Ended":
+                info["estado_serie"] = "Finalizada 🏁"
+            elif status_raw == "Running":
+                info["estado_serie"] = "En Emisión 📺"
+            elif status_raw == "To Be Determined":
+                info["estado_serie"] = "En Pausa / Pendiente ⏳"
+            else:
+                info["estado_serie"] = status_raw or "En Emisión"
+
+            show_id = res.get("id")
+            
+            if show_id:
+                # Cast
+                url_cast = f"https://api.tvmaze.com/shows/{show_id}/cast"
+                res_cast = requests.get(url_cast, headers=HEADERS, timeout=4).json()
+                if isinstance(res_cast, list):
+                    info["actores"] = [c["person"]["name"] for c in res_cast[:5] if "person" in c]
+                
+                # Temporadas y Episodios
+                url_seasons = f"https://api.tvmaze.com/shows/{show_id}/seasons"
+                res_s = requests.get(url_seasons, headers=HEADERS, timeout=4).json()
+                
+                url_episodes = f"https://api.tvmaze.com/shows/{show_id}/episodes"
+                res_ep = requests.get(url_episodes, headers=HEADERS, timeout=4).json()
+                
+                hoy = datetime.now().date()
+                
+                if isinstance(res_ep, list) and len(res_ep) > 0:
+                    eps_emitidos = []
+                    for ep in res_ep:
+                        a_date = ep.get("airdate")
+                        if a_date:
+                            try:
+                                f_ep = datetime.strptime(a_date, "%Y-%m-%d").date()
+                                if f_ep <= hoy:
+                                    eps_emitidos.append(ep)
+                            except ValueError:
+                                pass
+                    
+                    if eps_emitidos:
+                        info["primer_episodio"] = eps_emitidos[0].get("airdate", "N/A")
+                        info["ultimo_episodio"] = eps_emitidos[-1].get("airdate", "N/A")
+                
+                if isinstance(res_s, list):
+                    temp_emitidas_count = 0
+                    desglose = []
+                    
+                    for season in res_s:
+                        p_date = season.get("premiereDate")
+                        es_emitida = False
+                        if p_date:
+                            try:
+                                f_prem = datetime.strptime(p_date, "%Y-%m-%d").date()
+                                if f_prem <= hoy:
+                                    es_emitida = True
+                            except ValueError:
+                                pass
+                        
+                        if es_emitida:
+                            temp_emitidas_count += 1
+                            num_temp = season.get("number", temp_emitidas_count)
+                            eps_temp = [e for e in res_ep if e.get("season") == num_temp and e.get("airdate") and datetime.strptime(e.get("airdate"), "%Y-%m-%d").date() <= hoy] if isinstance(res_ep, list) else []
+                            
+                            desglose.append({
+                                "temporada": f"Temporada {num_temp}",
+                                "episodios": len(eps_temp) if eps_temp else (season.get("episodeOrder") or "N/A"),
+                                "rating": season.get("rating", {}).get("average") or info["rating_imdb"] or "N/A"
+                            })
+                    
+                    info["temp_totales"] = max(temp_emitidas_count, 1)
+                    info["desglose_temporadas"] = desglose
+    except Exception:
+        pass
+        
+    return info
+
+# --- CARGAR/ACTUALIZAR DATOS LOCALES ---
 def cargar_datos():
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                datos = json.load(f)
+                # Auto-reparar elementos existentes que les falten los nuevos datos
+                modificado = False
+                for s in datos:
+                    if "estado_serie" not in s or s.get("primer_episodio") in [None, "N/A"]:
+                        detalles = obtener_detalles_completos(s.get("imdb_id"))
+                        s.update(detalles)
+                        modificado = True
+                if modificado:
+                    guardar_datos(datos)
+                return datos
         except Exception:
             return []
     return []
@@ -111,8 +224,6 @@ def guardar_datos(datos):
 
 if "series" not in st.session_state:
     st.session_state.series = cargar_datos()
-
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamTrackerApp/1.0"}
 
 # --- BÚSQUEDA IMDB LIVE ---
 def buscar_imdb_live(search_term: str):
@@ -154,125 +265,20 @@ def buscar_imdb_live(search_term: str):
         
     return opciones
 
-# --- OBTENER DETALLES COMPLETOS DE LA SERIE ---
-def obtener_detalles_completos(imdb_id):
-    info = {
-        "rating_imdb": None,
-        "temp_totales": 1,
-        "generos": [],
-        "estado_serie": "Desconocido",
-        "primer_episodio": "N/A",
-        "ultimo_episodio": "N/A",
-        "actores": [],
-        "desglose_temporadas": []
-    }
-    
-    try:
-        # 1. Consulta principal de Show en TVMaze
-        url = f"https://api.tvmaze.com/lookup/shows?imdb={imdb_id}"
-        res = requests.get(url, headers=HEADERS, timeout=3).json()
-        
-        if res:
-            info["rating_imdb"] = res.get("rating", {}).get("average")
-            info["generos"] = res.get("genres", [])
-            
-            status_raw = res.get("status", "")
-            if status_raw == "Ended":
-                info["estado_serie"] = "Serie Finalizada 🏁"
-            elif status_raw == "Running":
-                info["estado_serie"] = "En Emisión 📺"
-            elif status_raw == "To Be Determined":
-                info["estado_serie"] = "En Pausa / Renovación Pendiente ⏳"
-            else:
-                info["estado_serie"] = status_raw
-
-            show_id = res.get("id")
-            
-            if show_id:
-                # 2. Obtener Elenco (Cast)
-                url_cast = f"https://api.tvmaze.com/shows/{show_id}/cast"
-                res_cast = requests.get(url_cast, headers=HEADERS, timeout=3).json()
-                if isinstance(res_cast, list):
-                    info["actores"] = [c["person"]["name"] for c in res_cast[:5] if "person" in c]
-                
-                # 3. Obtener Temporadas
-                url_seasons = f"https://api.tvmaze.com/shows/{show_id}/seasons"
-                res_s = requests.get(url_seasons, headers=HEADERS, timeout=3).json()
-                
-                # 4. Obtener todos los Episodios para cálculo exacto
-                url_episodes = f"https://api.tvmaze.com/shows/{show_id}/episodes"
-                res_ep = requests.get(url_episodes, headers=HEADERS, timeout=3).json()
-                
-                hoy = datetime.now().date()
-                
-                if isinstance(res_ep, list) and len(res_ep) > 0:
-                    # Filtrar solo episodios ya emitidos
-                    eps_emitidos = []
-                    for ep in res_ep:
-                        a_date = ep.get("airdate")
-                        if a_date:
-                            try:
-                                f_ep = datetime.strptime(a_date, "%Y-%m-%d").date()
-                                if f_ep <= hoy:
-                                    eps_emitidos.append(ep)
-                            except ValueError:
-                                pass
-                    
-                    if eps_emitidos:
-                        info["primer_episodio"] = eps_emitidos[0].get("airdate", "N/A")
-                        info["ultimo_episodio"] = eps_emitidos[-1].get("airdate", "N/A")
-                
-                if isinstance(res_s, list):
-                    temp_emitidas_count = 0
-                    desglose = []
-                    
-                    for season in res_s:
-                        p_date = season.get("premiereDate")
-                        es_emitida = False
-                        
-                        if p_date:
-                            try:
-                                f_prem = datetime.strptime(p_date, "%Y-%m-%d").date()
-                                if f_prem <= hoy:
-                                    es_emitida = True
-                            except ValueError:
-                                pass
-                        
-                        if es_emitida:
-                            temp_emitidas_count += 1
-                            num_temp = season.get("number", temp_emitidas_count)
-                            
-                            # Contar episodios emitidos de esta temporada
-                            eps_temp = [e for e in res_ep if e.get("season") == num_temp and e.get("airdate") and datetime.strptime(e.get("airdate"), "%Y-%m-%d").date() <= hoy] if isinstance(res_ep, list) else []
-                            
-                            desglose.append({
-                                "temporada": f"Temporada {num_temp}",
-                                "episodios": len(eps_temp) if eps_temp else (season.get("episodeOrder") or "N/A"),
-                                "rating": season.get("rating", {}).get("average") or info["rating_imdb"] or "N/A"
-                            })
-                    
-                    info["temp_totales"] = max(temp_emitidas_count, 1)
-                    info["desglose_temporadas"] = desglose
-    except Exception:
-        pass
-        
-    return info
-
 # --- HEADER PRINCIPAL ---
 st.markdown("""
 <div class="header-container">
     <div class="header-title">🎬 StreamTracker</div>
     <div style="color: #94a3b8; font-size: 0.95rem; margin-top: 4px;">
-        Tu catálogo personal con información extendida en tiempo real
+        Tu catálogo personal interactivo
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-# --- LAYOUT PRINCIPAL ---
 col_lateral, col_principal = st.columns([1, 2.8], gap="large")
 
 # ==========================================
-# COLUMNA IZQUIERDA: BÚSQUEDA Y CONTROL
+# COLUMNA IZQUIERDA: BÚSQUEDA
 # ==========================================
 with col_lateral:
     st.subheader("🔍 Añadir Contenido")
@@ -290,11 +296,8 @@ with col_lateral:
         if seleccion.get("poster_url"):
             st.image(seleccion["poster_url"], use_container_width=True)
             
-        if seleccion.get("elenco"):
-            st.caption(f"👥 **Reparto principal:** {seleccion['elenco']}")
-            
         if st.button("➕ Agregar a mi colección", use_container_width=True, type="primary"):
-            with st.spinner("Cargando detalles de temporadas, episodios y elenco..."):
+            with st.spinner("Cargando información completa..."):
                 detalles = obtener_detalles_completos(seleccion["imdb_id"])
                 
                 existe = False
@@ -310,7 +313,7 @@ with col_lateral:
                         "serie": seleccion["nombre"],
                         "imdb_id": seleccion["imdb_id"],
                         "temp_vista": 1,
-                        "rating": 8,  # Calificación por defecto de 1 a 10
+                        "rating": 8,
                         "poster_url": seleccion["poster_url"],
                     }
                     nueva_serie.update(detalles)
@@ -321,11 +324,10 @@ with col_lateral:
                 st.rerun()
 
     st.markdown("---")
-    st.markdown("### 📊 Estadísticas")
     st.metric("Total en Colección", len(st.session_state.series))
 
 # ==========================================
-# COLUMNA DERECHA: TARJETAS DE CONTENIDO
+# COLUMNA DERECHA: TARJETAS EN COLECCIÓN
 # ==========================================
 with col_principal:
     st.subheader(f"📺 Tu Colección ({len(st.session_state.series)})")
@@ -344,8 +346,6 @@ with col_principal:
                 
                 badge_html = f"<span class='status-badge-completed'>Completada</span>" if es_completa else f"<span class='status-badge-viewing'>Viendo</span>"
                 rating_imdb_html = f"<span class='imdb-badge'>IMDb {s['rating_imdb']}</span>" if s.get("rating_imdb") else ""
-                
-                # Nota personal del 1 al 10 con estrellas
                 mi_nota = int(s.get("rating", 8))
                 
                 with st.container():
@@ -361,32 +361,26 @@ with col_principal:
                         st.markdown(f"### {s['serie']}")
                         st.markdown(f"{badge_html} {rating_imdb_html}", unsafe_allow_html=True)
                         
-                        # Mostrar Géneros
                         if s.get("generos"):
                             generos_html = "".join([f"<span class='genre-tag'>{g}</span>" for g in s["generos"]])
                             st.markdown(f"<div style='margin-top: 6px;'>{generos_html}</div>", unsafe_allow_html=True)
                         
                         st.markdown(f"**Progreso:** Temp. {temp_v} de {temp_t}")
                         st.progress(progreso)
-                        
-                        # Puntuación 1 a 10 con formato estelar
                         st.markdown(f"**Tu Nota:** ⭐ **{mi_nota}/10**")
 
-                    # Expander con TODOS los detalles pedidos
+                    # Expander con detalles
                     with st.expander("ℹ️ Ver Detalle y Administrar"):
-                        # 1. Estado de la serie y fechas
                         st.markdown(f"**Estado:** <span class='status-tag'>{s.get('estado_serie', 'N/A')}</span>", unsafe_allow_html=True)
-                        
                         st.markdown(f"📅 **Primer Episodio:** `{s.get('primer_episodio', 'N/A')}`")
                         st.markdown(f"📅 **Último Episodio:** `{s.get('ultimo_episodio', 'N/A')}`")
                         
-                        # 2. Actores principales
                         if s.get("actores"):
                             st.markdown(f"🎭 **Actores Principales:** {', '.join(s['actores'])}")
                         
                         st.divider()
                         
-                        # 3. Tabla de Temporadas / Capítulos / Puntuación IMDb
+                        # Desglose de Temporadas
                         st.markdown("##### 📚 Desglose por Temporada")
                         desglose = s.get("desglose_temporadas", [])
                         if desglose:
@@ -401,12 +395,20 @@ with col_principal:
                                 use_container_width=True
                             )
                         else:
-                            st.caption("Sin desglose de temporadas disponible.")
+                            st.caption("Sin desglose disponible.")
                             
                         st.divider()
                         
-                        # 4. Edición de puntuación (1 al 10) y temporada vista
-                        st.markdown("##### ⚙️ Actualizar mi Estado")
+                        # CALIFICACIÓN CON 10 ESTRELLAS SELECCIONABLES
+                        st.markdown("##### ⭐ Tu Calificación Personal")
+                        
+                        estrellas_seleccionadas = st_star_rating(
+                            label="Haz clic para calificar (1 a 10 estrellas):",
+                            maxValue=10,
+                            defaultValue=mi_nota,
+                            size=24,
+                            key=f"star_rating_{idx}"
+                        )
                         
                         nueva_temp = st.number_input(
                             "Última Temporada Vista:",
@@ -416,21 +418,13 @@ with col_principal:
                             key=f"input_temp_{idx}"
                         )
                         
-                        nuevo_rating = st.slider(
-                            "Tu Calificación (1 al 10):",
-                            min_value=1,
-                            max_value=10,
-                            value=mi_nota,
-                            key=f"input_rate_{idx}"
-                        )
-                        
                         b_col1, b_col2 = st.columns(2)
                         with b_col1:
                             if st.button("💾 Guardar Cambios", key=f"btn_save_{idx}", use_container_width=True):
                                 st.session_state.series[idx]["temp_vista"] = nueva_temp
-                                st.session_state.series[idx]["rating"] = nuevo_rating
+                                st.session_state.series[idx]["rating"] = estrellas_seleccionadas if estrellas_seleccionadas else mi_nota
                                 guardar_datos(st.session_state.series)
-                                st.success("¡Actualizado!")
+                                st.success("¡Guardado!")
                                 st.rerun()
                         with b_col2:
                             if st.button("🗑️ Eliminar Serie", key=f"btn_del_{idx}", use_container_width=True):
@@ -440,4 +434,4 @@ with col_principal:
                                 
                     st.markdown("<br>", unsafe_allow_html=True)
     else:
-        st.info("Tu colección está vacía. Utiliza el buscador del panel izquierdo para agregar tu primera serie.")
+        st.info("Tu colección está vacía.")

@@ -4,6 +4,7 @@ import json
 import os
 from datetime import datetime
 from streamlit_searchbox import st_searchbox
+from google import genai
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -26,7 +27,7 @@ st.markdown("""
         background: linear-gradient(90deg, #1e293b 0%, #0f172a 100%);
         padding: 1.5rem 2rem;
         border-radius: 16px;
-        margin-bottom: 2rem;
+        margin-bottom: 1.5rem;
         border: 1px solid #334155;
         box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
     }
@@ -96,7 +97,7 @@ st.markdown("""
 DB_FILE = "series_data.json"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamTrackerApp/1.0"}
 
-# --- OBTENER DETALLES COMPLETOS ---
+# --- OBTENER DETALLES COMPLETOS DE TVMAZE ---
 def obtener_detalles_completos(imdb_id):
     info = {
         "rating_imdb": None,
@@ -133,13 +134,11 @@ def obtener_detalles_completos(imdb_id):
             show_id = res.get("id")
             
             if show_id:
-                # Cast
                 url_cast = f"https://api.tvmaze.com/shows/{show_id}/cast"
                 res_cast = requests.get(url_cast, headers=HEADERS, timeout=4).json()
                 if isinstance(res_cast, list):
                     info["actores"] = [c["person"]["name"] for c in res_cast[:5] if "person" in c]
                 
-                # Temporadas y Episodios
                 url_seasons = f"https://api.tvmaze.com/shows/{show_id}/seasons"
                 res_s = requests.get(url_seasons, headers=HEADERS, timeout=4).json()
                 
@@ -197,7 +196,7 @@ def obtener_detalles_completos(imdb_id):
         
     return info
 
-# --- CARGAR/AUTO-COMPLETAR DATOS LOCALES ---
+# --- CARGAR / GUARDAR DATOS ---
 def cargar_datos():
     if os.path.exists(DB_FILE):
         try:
@@ -222,6 +221,9 @@ def guardar_datos(datos):
 
 if "series" not in st.session_state:
     st.session_state.series = cargar_datos()
+
+if "recomendaciones" not in st.session_state:
+    st.session_state.recomendaciones = []
 
 # --- BÚSQUEDA IMDB LIVE ---
 def buscar_imdb_live(search_term: str):
@@ -263,12 +265,55 @@ def buscar_imdb_live(search_term: str):
         
     return opciones
 
+# --- FUNCIÓN DE IA RECOMENDADORA (GENERA JSON) ---
+def obtener_recomendaciones_ia(api_key, coleccion):
+    try:
+        client = genai.Client(api_key=api_key)
+        
+        resumen = []
+        for s in coleccion:
+            resumen.append(
+                f"- {s['serie']} (Géneros: {', '.join(s.get('generos', []))}, Calificación personal: {s.get('rating', 8)}/10)"
+            )
+        
+        prompt = f"""
+        Actúa como un experto curador de cine y televisión.
+        Analiza el historial de este usuario:
+
+        {chr(10).join(resumen)}
+
+        Basándote en sus valoraciones más altas y géneros preferidos, recomienda exactamente 4 series o películas que NO estén en su lista.
+        
+        Responde ÚNICAMENTE en formato JSON válido (sin texto antes ni después) con la siguiente estructura de lista:
+        [
+            {{
+                "titulo": "Título de la serie o película",
+                "motivo": "Explicación breve de por qué le gustará basándote en lo que ya vio.",
+                "plataforma": "Netflix / Max / Prime Video / etc."
+            }}
+        ]
+        """
+
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        
+        texto_clean = response.text.strip()
+        if texto_clean.startswith("```json"):
+            texto_clean = texto_clean.replace("```json", "").replace("```", "").strip()
+            
+        return json.loads(texto_clean)
+    except Exception as e:
+        st.error(f"Error al consultar la IA: {str(e)}")
+        return []
+
 # --- HEADER PRINCIPAL ---
 st.markdown("""
 <div class="header-container">
     <div class="header-title">🎬 StreamTracker</div>
     <div style="color: #94a3b8; font-size: 0.95rem; margin-top: 4px;">
-        Tu catálogo personal interactivo
+        Tu catálogo personal interactivo impulsado por Inteligencia Artificial
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -276,7 +321,7 @@ st.markdown("""
 col_lateral, col_principal = st.columns([1, 2.8], gap="large")
 
 # ==========================================
-# COLUMNA IZQUIERDA: BÚSQUEDA
+# COLUMNA IZQUIERDA: BÚSQUEDA Y NAVEGACIÓN
 # ==========================================
 with col_lateral:
     st.subheader("🔍 Añadir Contenido")
@@ -295,7 +340,7 @@ with col_lateral:
             st.image(seleccion["poster_url"], use_container_width=True)
             
         if st.button("➕ Agregar a mi colección", use_container_width=True, type="primary"):
-            with st.spinner("Cargando información completa..."):
+            with st.spinner("Cargando detalles..."):
                 detalles = obtener_detalles_completos(seleccion["imdb_id"])
                 
                 existe = False
@@ -325,112 +370,159 @@ with col_lateral:
     st.metric("Total en Colección", len(st.session_state.series))
 
 # ==========================================
-# COLUMNA DERECHA: TARJETAS EN COLECCIÓN
+# COLUMNA DERECHA: SECCIONES (TABS)
 # ==========================================
 with col_principal:
-    st.subheader(f"📺 Tu Colección ({len(st.session_state.series)})")
-    
-    if st.session_state.series:
-        grid_cols = st.columns(2, gap="medium")
-        
-        for idx, s in enumerate(st.session_state.series):
-            col_target = grid_cols[idx % 2]
-            
-            with col_target:
-                temp_v = int(s.get("temp_vista", 1))
-                temp_t = int(s.get("temp_totales", 1))
-                progreso = min(temp_v / temp_t, 1.0) if temp_t > 0 else 1.0
-                es_completa = temp_v >= temp_t
-                
-                badge_html = f"<span class='status-badge-completed'>Completada</span>" if es_completa else f"<span class='status-badge-viewing'>Viendo</span>"
-                rating_imdb_html = f"<span class='imdb-badge'>IMDb {s['rating_imdb']}</span>" if s.get("rating_imdb") else ""
-                mi_nota = int(s.get("rating", 8))
-                
-                with st.container():
-                    c_img, c_info = st.columns([1, 1.5])
-                    
-                    with c_img:
-                        if s.get("poster_url"):
-                            st.image(s["poster_url"], use_container_width=True)
-                        else:
-                            st.write("🖼️ Sin Imagen")
-                            
-                    with c_info:
-                        st.markdown(f"### {s['serie']}")
-                        st.markdown(f"{badge_html} {rating_imdb_html}", unsafe_allow_html=True)
-                        
-                        if s.get("generos"):
-                            generos_html = "".join([f"<span class='genre-tag'>{g}</span>" for g in s["generos"]])
-                            st.markdown(f"<div style='margin-top: 6px;'>{generos_html}</div>", unsafe_allow_html=True)
-                        
-                        st.markdown(f"**Progreso:** Temp. {temp_v} de {temp_t}")
-                        st.progress(progreso)
-                        st.markdown(f"**Tu Nota:** ⭐ **{mi_nota}/10**")
+    tab_coleccion, tab_ia = st.tabs(["📺 Mi Colección", "✨ Recomendaciones IA"])
 
-                    # Expander con detalles
-                    with st.expander("ℹ️ Ver Detalle y Administrar"):
-                        st.markdown(f"**Estado:** <span class='status-tag'>{s.get('estado_serie', 'N/A')}</span>", unsafe_allow_html=True)
-                        st.markdown(f"📅 **Primer Episodio:** `{s.get('primer_episodio', 'N/A')}`")
-                        st.markdown(f"📅 **Último Episodio:** `{s.get('ultimo_episodio', 'N/A')}`")
+    # ------------------------------------------
+    # PESTAÑA 1: MI COLECCIÓN
+    # ------------------------------------------
+    with tab_coleccion:
+        if st.session_state.series:
+            grid_cols = st.columns(2, gap="medium")
+            
+            for idx, s in enumerate(st.session_state.series):
+                col_target = grid_cols[idx % 2]
+                
+                with col_target:
+                    temp_v = int(s.get("temp_vista", 1))
+                    temp_t = int(s.get("temp_totales", 1))
+                    progreso = min(temp_v / temp_t, 1.0) if temp_t > 0 else 1.0
+                    es_completa = temp_v >= temp_t
+                    
+                    badge_html = f"<span class='status-badge-completed'>Completada</span>" if es_completa else f"<span class='status-badge-viewing'>Viendo</span>"
+                    rating_imdb_html = f"<span class='imdb-badge'>IMDb {s['rating_imdb']}</span>" if s.get("rating_imdb") else ""
+                    mi_nota = int(s.get("rating", 8))
+                    
+                    with st.container():
+                        c_img, c_info = st.columns([1, 1.5])
                         
-                        if s.get("actores"):
-                            st.markdown(f"🎭 **Actores Principales:** {', '.join(s['actores'])}")
-                        
-                        st.divider()
-                        
-                        # Desglose de Temporadas
-                        st.markdown("##### 📚 Desglose por Temporada")
-                        desglose = s.get("desglose_temporadas", [])
-                        if desglose:
-                            st.dataframe(
-                                desglose,
-                                column_config={
-                                    "temporada": "Temporada",
-                                    "episodios": "Capítulos",
-                                    "rating": "Nota IMDb"
-                                },
-                                hide_index=True,
-                                use_container_width=True
-                            )
-                        else:
-                            st.caption("Sin desglose disponible.")
-                            
-                        st.divider()
-                        
-                        # CALIFICACIÓN EN ESTRELLAS (1 a 10)
-                        st.markdown("##### ⭐ Tu Calificación Personal")
-                        
-                        idx_defecto = max(0, min(mi_nota - 1, 9))
-                        calificacion_seleccionada = st.selectbox(
-                            "Puntuación (1 al 10):",
-                            options=list(range(1, 11)),
-                            format_func=lambda x: f"{'⭐' * x} ({x}/10)",
-                            index=idx_defecto,
-                            key=f"select_rating_{idx}"
-                        )
-                        
-                        nueva_temp = st.number_input(
-                            "Última Temporada Vista:",
-                            min_value=0,
-                            max_value=50,
-                            value=temp_v,
-                            key=f"input_temp_{idx}"
-                        )
-                        
-                        b_col1, b_col2 = st.columns(2)
-                        with b_col1:
-                            if st.button("💾 Guardar Cambios", key=f"btn_save_{idx}", use_container_width=True):
-                                st.session_state.series[idx]["temp_vista"] = nueva_temp
-                                st.session_state.series[idx]["rating"] = calificacion_seleccionada
-                                guardar_datos(st.session_state.series)
-                                st.success("¡Guardado!")
-                                st.rerun()
-                        with b_col2:
-                            if st.button("🗑️ Eliminar Serie", key=f"btn_del_{idx}", use_container_width=True):
-                                st.session_state.series.pop(idx)
-                                guardar_datos(st.session_state.series)
-                                st.rerun()
+                        with c_img:
+                            if s.get("poster_url"):
+                                st.image(s["poster_url"], use_container_width=True)
+                            else:
+                                st.write("🖼️ Sin Imagen")
                                 
-                    st.markdown("<br>", unsafe_allow_html=True)
-    else:
-        st.info("Tu colección está vacía.")
+                        with c_info:
+                            st.markdown(f"### {s['serie']}")
+                            st.markdown(f"{badge_html} {rating_imdb_html}", unsafe_allow_html=True)
+                            
+                            if s.get("generos"):
+                                generos_html = "".join([f"<span class='genre-tag'>{g}</span>" for g in s["generos"]])
+                                st.markdown(f"<div style='margin-top: 6px;'>{generos_html}</div>", unsafe_allow_html=True)
+                            
+                            st.markdown(f"**Progreso:** Temp. {temp_v} de {temp_t}")
+                            st.progress(progreso)
+                            st.markdown(f"**Tu Nota:** ⭐ **{mi_nota}/10**")
+
+                        # Expander
+                        with st.expander("ℹ️ Ver Detalle y Administrar"):
+                            st.markdown(f"**Estado:** <span class='status-tag'>{s.get('estado_serie', 'N/A')}</span>", unsafe_allow_html=True)
+                            st.markdown(f"📅 **Primer Episodio:** `{s.get('primer_episodio', 'N/A')}`")
+                            st.markdown(f"📅 **Último Episodio:** `{s.get('ultimo_episodio', 'N/A')}`")
+                            
+                            if s.get("actores"):
+                                st.markdown(f"🎭 **Actores Principales:** {', '.join(s['actores'])}")
+                            
+                            st.divider()
+                            
+                            # Desglose de Temporadas
+                            st.markdown("##### 📚 Desglose por Temporada")
+                            desglose = s.get("desglose_temporadas", [])
+                            if desglose:
+                                st.dataframe(
+                                    desglose,
+                                    column_config={
+                                        "temporada": "Temporada",
+                                        "episodios": "Capítulos",
+                                        "rating": "Nota IMDb"
+                                    },
+                                    hide_index=True,
+                                    use_container_width=True
+                                )
+                            else:
+                                st.caption("Sin desglose disponible.")
+                                
+                            st.divider()
+                            
+                            # CALIFICACIÓN
+                            st.markdown("##### ⭐ Tu Calificación Personal")
+                            
+                            idx_defecto = max(0, min(mi_nota - 1, 9))
+                            calificacion_seleccionada = st.selectbox(
+                                "Puntuación (1 al 10):",
+                                options=list(range(1, 11)),
+                                format_func=lambda x: f"{'⭐' * x} ({x}/10)",
+                                index=idx_defecto,
+                                key=f"select_rating_{idx}"
+                            )
+                            
+                            nueva_temp = st.number_input(
+                                "Última Temporada Vista:",
+                                min_value=0,
+                                max_value=50,
+                                value=temp_v,
+                                key=f"input_temp_{idx}"
+                            )
+                            
+                            b_col1, b_col2 = st.columns(2)
+                            with b_col1:
+                                if st.button("💾 Guardar Cambios", key=f"btn_save_{idx}", use_container_width=True):
+                                    st.session_state.series[idx]["temp_vista"] = nueva_temp
+                                    st.session_state.series[idx]["rating"] = calificacion_seleccionada
+                                    guardar_datos(st.session_state.series)
+                                    st.success("¡Guardado!")
+                                    st.rerun()
+                            with b_col2:
+                                if st.button("🗑️ Eliminar Serie", key=f"btn_del_{idx}", use_container_width=True):
+                                    st.session_state.series.pop(idx)
+                                    guardar_datos(st.session_state.series)
+                                    st.rerun()
+                                    
+                        st.markdown("<br>", unsafe_allow_html=True)
+        else:
+            st.info("Tu colección está vacía. ¡Busca y agrega tus series o películas en el panel izquierdo!")
+
+    # ------------------------------------------
+    # PESTAÑA 2: NUEVA SECCIÓN DE RECOMENDACIONES IA
+    # ------------------------------------------
+    with tab_ia:
+        st.markdown("### 🤖 Descubre qué ver a continuación")
+        st.write("La Inteligencia Artificial analizó tu catálogo, tus notas más altas y tus géneros preferidos para seleccionarte estas opciones:")
+        
+        c_key, c_btn = st.columns([3, 1.5])
+        with c_key:
+            api_key = st.text_input("Ingresa tu Gemini API Key:", type="password", placeholder="AIzaSy...")
+        with c_btn:
+            st.write("") # Espaciador
+            st.write("") 
+            generar = st.button("✨ Generar Recomendaciones", use_container_width=True, type="primary")
+
+        if generar:
+            if not api_key:
+                st.warning("⚠️ Debes ingresar tu API Key para generar recomendaciones.")
+            elif not st.session_state.series:
+                st.warning("⚠️ Tu colección está vacía. Agrega al menos una serie para analizar tus gustos.")
+            else:
+                with st.spinner("🧠 La IA está analizando tus gustos cinéfilos..."):
+                    st.session_state.recomendaciones = obtener_recomendaciones_ia(api_key, st.session_state.series)
+
+        st.divider()
+
+        # Mostrar tarjetas con las recomendaciones
+        if st.session_state.recomendaciones:
+            cols_recom = st.columns(2)
+            
+            for index, rec in enumerate(st.session_state.recomendaciones):
+                col_rec = cols_recom[index % 2]
+                
+                with col_rec:
+                    with st.container(border=True):
+                        st.markdown(f"#### 🍿 {rec['titulo']}")
+                        st.markdown(f"📺 **Disponible en:** `{rec['plataforma']}`")
+                        st.markdown(f"💡 **Por qué te gustará:** {rec['motivo']}")
+                        
+                        # Botón para buscarla rápido
+                        if st.button(f"🔍 Buscar para agregar", key=f"btn_add_rec_{index}", use_container_width=True):
+                            st.info(f"Usa el buscador lateral para encontrar **{rec['titulo']}** y añadirla a tu lista.")

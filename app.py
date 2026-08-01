@@ -269,7 +269,7 @@ def buscar_imdb_live(search_term: str):
         
     return opciones
 
-# --- FUNCIÓN DE IA RECOMENDADORA (GENERA JSON CON REINTENTOS) ---
+# --- FUNCIÓN DE IA RECOMENDADORA (CON MANEJO AVANZADO DE LÍMITES) ---
 def obtener_recomendaciones_ia(api_key, coleccion):
     client = genai.Client(api_key=api_key)
     
@@ -287,7 +287,7 @@ def obtener_recomendaciones_ia(api_key, coleccion):
 
     Basándote en sus valoraciones más altas y géneros preferidos, recomienda exactamente 4 series o películas que NO estén en su lista.
     
-    Responde ÚNICAMENTE en formato JSON válido (sin texto antes ni después) con la siguiente estructura de lista:
+    Responde ÚNICAMENTE en formato JSON válido con la siguiente estructura de lista:
     [
         {{
             "titulo": "Título de la serie o película",
@@ -297,11 +297,11 @@ def obtener_recomendaciones_ia(api_key, coleccion):
     ]
     """
 
-    # Intentar con un modelo liviano y hasta 3 reintentos si la cuota está saturada
-    modelos = ['gemini-1.5-flash-8b', 'gemini-1.5-flash', 'gemini-2.0-flash']
+    # Probar diferentes modelos disponibles en orden de menor latencia / mayor cuota
+    modelos = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     
     for modelo in modelos:
-        for intento in range(2):
+        for intento in range(3):
             try:
                 response = client.models.generate_content(
                     model=modelo,
@@ -311,15 +311,19 @@ def obtener_recomendaciones_ia(api_key, coleccion):
                 texto_clean = response.text.strip()
                 if texto_clean.startswith("```json"):
                     texto_clean = texto_clean.replace("```json", "").replace("```", "").strip()
+                elif texto_clean.startswith("```"):
+                    texto_clean = texto_clean.replace("```", "").strip()
                     
                 return json.loads(texto_clean)
             except Exception as e:
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    time.sleep(3)  # Espera 3 segundos si saturó la cuota antes de reintentar
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    # Espera progresiva antes de reintentar
+                    time.sleep(2 * (intento + 1))
                 else:
-                    break  # Si es otro error pasa al siguiente modelo
+                    break
                     
-    st.error("⚠️ La API de Google está con alta demanda en este momento. Por favor espera unos 15 segundos y vuelve a presionar el botón.")
+    st.error("⚠️ La cuota gratuita de tu API Key alcanzó el límite diario o temporal. Espera unos segundos e intentalo de nuevo.")
     return []
 
 # --- HEADER PRINCIPAL ---
@@ -499,7 +503,7 @@ with col_principal:
             st.info("Tu colección está vacía. ¡Busca y agrega tus series o películas en el panel izquierdo!")
 
     # ------------------------------------------
-    # PESTAÑA 2: NUEVA SECCIÓN DE RECOMENDACIONES IA
+    # PESTAÑA 2: RECOMENDACIONES IA
     # ------------------------------------------
     with tab_ia:
         st.markdown("### 🤖 Descubre qué ver a continuación")
@@ -509,7 +513,7 @@ with col_principal:
 
         if generar:
             if not GEMINI_API_KEY:
-                st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit. Por favor, añádela en Settings -> Secrets.")
+                st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit.")
             elif not st.session_state.series:
                 st.warning("⚠️ Tu colección está vacía. Agrega al menos una serie para analizar tus gustos.")
             else:
@@ -518,7 +522,6 @@ with col_principal:
 
         st.divider()
 
-        # Mostrar tarjetas con las recomendaciones
         if st.session_state.recomendaciones:
             cols_recom = st.columns(2)
             
@@ -530,7 +533,3 @@ with col_principal:
                         st.markdown(f"#### 🍿 {rec['titulo']}")
                         st.markdown(f"📺 **Disponible en:** `{rec['plataforma']}`")
                         st.markdown(f"💡 **Por qué te gustará:** {rec['motivo']}")
-                        
-                        # Botón para buscarla rápido
-                        if st.button(f"🔍 Buscar para agregar", key=f"btn_add_rec_{index}", use_container_width=True):
-                            st.info(f"Usa el buscador lateral para encontrar **{rec['titulo']}** y añadirla a tu lista.")

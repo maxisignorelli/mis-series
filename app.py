@@ -6,6 +6,9 @@ from datetime import datetime
 from streamlit_searchbox import st_searchbox
 from google import genai
 
+# --- OBTENER API KEY DESDE LOS SECRETS DE STREAMLIT ---
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
+
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="StreamTracker — Estilo JustWatch",
@@ -491,22 +494,16 @@ with col_principal:
         st.markdown("### 🤖 Descubre qué ver a continuación")
         st.write("La Inteligencia Artificial analizó tu catálogo, tus notas más altas y tus géneros preferidos para seleccionarte estas opciones:")
         
-        c_key, c_btn = st.columns([3, 1.5])
-        with c_key:
-            api_key = st.text_input("Ingresa tu Gemini API Key:", type="password", placeholder="AIzaSy...")
-        with c_btn:
-            st.write("") # Espaciador
-            st.write("") 
-            generar = st.button("✨ Generar Recomendaciones", use_container_width=True, type="primary")
+        generar = st.button("✨ Generar Recomendaciones Personalizadas", use_container_width=True, type="primary")
 
         if generar:
-            if not api_key:
-                st.warning("⚠️ Debes ingresar tu API Key para generar recomendaciones.")
+            if not GEMINI_API_KEY:
+                st.error("⚠️ No se encontró la API Key en los Secrets de Streamlit. Por favor, añádela en Settings -> Secrets.")
             elif not st.session_state.series:
                 st.warning("⚠️ Tu colección está vacía. Agrega al menos una serie para analizar tus gustos.")
             else:
                 with st.spinner("🧠 La IA está analizando tus gustos cinéfilos..."):
-                    st.session_state.recomendaciones = obtener_recomendaciones_ia(api_key, st.session_state.series)
+                    st.session_state.recomendaciones = obtener_recomendaciones_ia(GEMINI_API_KEY, st.session_state.series)
 
         st.divider()
 
